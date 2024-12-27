@@ -25,6 +25,7 @@
 #define HW_HAS_PHASE_FILTERS
 #define INVERTED_SHUNT_POLARITY
 #define SERVO_BUZZER
+#define HW_USE_BRK
 
 // Macros
 #define LED_GREEN_GPIO			GPIOB
@@ -40,6 +41,12 @@
 // Phase filter
 #define PHASE_FILTER_OFF()		palSetPad(GPIOC, 15); palSetPad(GPIOC, 14); palSetPad(GPIOC, 13)
 #define PHASE_FILTER_ON()		palClearPad(GPIOC, 15); palClearPad(GPIOC, 14); palClearPad(GPIOC, 13)
+
+// AUX 
+#define AUX_GPIO				GPIOC
+#define AUX_PIN					9
+#define AUX_ON()				palSetPad(AUX_GPIO, AUX_PIN)
+#define AUX_OFF()				palClearPad(AUX_GPIO, AUX_PIN)
 
 // Shutdown pin
 #define HW_SHUTDOWN_GPIO		    GPIOB
@@ -181,6 +188,10 @@
 #define LSM6DS3_SCL_GPIO		GPIOB
 #define LSM6DS3_SCL_PIN			5
 
+//BRK
+#define BRK_GPIO				GPIOB
+#define BRK_PIN					12
+
 // UART Peripheral
 #define HW_UART_DEV		        SD4
 #define HW_UART_GPIO_AF		    GPIO_AF_UART4
@@ -217,7 +228,7 @@
 #define MCCONF_L_MIN_VOLTAGE			20.0		// Minimum input voltage
 #endif
 #ifndef MCCONF_L_MAX_VOLTAGE
-#define MCCONF_L_MAX_VOLTAGE			140.0	// Maximum input voltage
+#define MCCONF_L_MAX_VOLTAGE			136.0	// Maximum input voltage
 #endif
 #ifndef MCCONF_DEFAULT_MOTOR_TYPE
 #define MCCONF_DEFAULT_MOTOR_TYPE		MOTOR_TYPE_FOC
@@ -226,22 +237,21 @@
 #define MCCONF_FOC_F_ZV				    30000.0
 #endif
 #ifndef MCCONF_L_MAX_ABS_CURRENT
-#define MCCONF_L_MAX_ABS_CURRENT		220.0	// The maximum absolute current above which a fault is generated
+#define MCCONF_L_MAX_ABS_CURRENT		180.0	// The maximum absolute current above which a fault is generated
 #endif
 #ifndef MCCONF_FOC_SAMPLE_V0_V7
 #define MCCONF_FOC_SAMPLE_V0_V7			false	// Run control loop in both v0 and v7 (requires phase shunts)
 #endif
 #ifndef MCCONF_L_IN_CURRENT_MAX
-#define MCCONF_L_IN_CURRENT_MAX			100.0	// Input current limit in Amperes (Upper)
+#define MCCONF_L_IN_CURRENT_MAX			50.0	// Input current limit in Amperes (Upper)
 #endif
 #ifndef MCCONF_L_IN_CURRENT_MIN
 #define MCCONF_L_IN_CURRENT_MIN			-50.0	// Input current limit in Amperes (Lower)
 #endif
 
 // Setting limits
-#define HW_LIM_CURRENT			-200.0, 200.0
-#define HW_LIM_CURRENT_IN		-150.0, 150.0
-#define HW_LIM_CURRENT_ABS		0.0, 300.0
+#define HW_LIM_CURRENT			-180.0, 180.0
+#define HW_LIM_CURRENT_ABS		0.0, 220.0
 #define HW_LIM_VIN			    18.0, 140.0
 #define HW_LIM_ERPM			    -200e3, 200e3
 #define HW_LIM_DUTY_MIN			0.0, 0.1
