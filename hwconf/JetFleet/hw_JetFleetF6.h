@@ -20,7 +20,7 @@
 #ifndef HW_JetFleetF6_H_
 #define HW_JetFleetF6_H_
 
-#define HW_NAME					"JetFleetF6_32s_beta"
+#define HW_NAME					"JetFleetF6_32s"
 
 #include "hw_JetFleetF6_core.h"
 
