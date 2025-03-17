@@ -251,7 +251,8 @@ typedef enum {
 	CAN_BAUD_20K,
 	CAN_BAUD_50K,
 	CAN_BAUD_75K,
-	CAN_BAUD_100K
+	CAN_BAUD_100K,
+	CAN_BAUD_INVALID = 255,
 } CAN_BAUD;
 
 typedef enum {
@@ -293,6 +294,7 @@ typedef struct {
 
 #define BMS_MAX_CELLS	50
 #define BMS_MAX_TEMPS	50
+#define BMS_STATUS_LEN	41
 
 typedef struct {
 	float v_tot;
@@ -324,6 +326,7 @@ typedef struct {
 	int is_balancing;
 	int is_charge_allowed;
 	int data_version;
+	char status[BMS_STATUS_LEN];
 	systime_t update_time;
 } bms_values;
 
@@ -507,6 +510,7 @@ typedef struct {
 	float foc_fw_q_current_factor;
 	FOC_SPEED_SRC foc_speed_soure;
 	bool foc_short_ls_on_zero_duty;
+	float foc_overmod_factor;
 
 	PID_RATE sp_pid_loop_rate;
 
@@ -1117,6 +1121,8 @@ typedef enum {
 	COMM_SHUTDOWN							= 156,
 	
 	COMM_FW_INFO							= 157,
+
+	COMM_CAN_UPDATE_BAUD_ALL				= 158,
 } COMM_PACKET_ID;
 
 // CAN commands
@@ -1184,6 +1190,12 @@ typedef enum {
 	CAN_PACKET_GNSS_LAT						= 60,
 	CAN_PACKET_GNSS_LON						= 61,
 	CAN_PACKET_GNSS_ALT_SPEED_HDOP			= 62,
+	CAN_PACKET_UPDATE_BAUD					= 63,
+	CAN_PACKET_BMS_STATUS_1					= 64,
+	CAN_PACKET_BMS_STATUS_2					= 65,
+	CAN_PACKET_BMS_STATUS_3					= 66,
+	CAN_PACKET_BMS_STATUS_4					= 67,
+	CAN_PACKET_BMS_STATUS_5					= 68,
 	CAN_PACKET_MAKE_ENUM_32_BITS = 0xFFFFFFFF,
 } CAN_PACKET_ID;
 

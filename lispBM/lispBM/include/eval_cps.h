@@ -1,5 +1,5 @@
 /*
-    Copyright 2018, 2020, 2021, 2022 Joel Svensson  svenssonjoel@yahoo.se
+    Copyright 2018, 2020 - 2025 Joel Svensson  svenssonjoel@yahoo.se
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -126,11 +126,19 @@ lbm_value eval_cps_get_env(void);
  * \return 1 on success and 0 on failure.
  */
 int lbm_eval_init(void);
+#ifdef LBM_USE_TIME_QUOTA
+/**  Set a new value to use as time quota.
+ *   This changes the scheduling interval.
+ *   \param quota The new quota.
+ */
+void lbm_set_eval_time_quota(uint32_t quota);
+#else
 /**  Set a new value to use as step quota.
  *   This changes the scheduling interval.
  *   \param quota The new quota.
  */
 void lbm_set_eval_step_quota(uint32_t quota);
+#endif
 /** Initialize events
  * \param num_events The maximum number of unprocessed events.
  * \return true on success, false otherwise.
@@ -330,6 +338,10 @@ void lbm_toggle_verbose(void);
  * \param verbose Boolean to turn verbose errors on or off.
  */
 void lbm_set_verbose(bool verbose);
+/** Hide error messages for trapped errors
+ * \param hide true to hide error messages when trapped.
+ */
+void lbm_set_hide_trapped_error(bool hide);
 /** Set a usleep callback for use by the evaluator thread.
  *
  * \param fptr Pointer to a sleep function.
@@ -367,7 +379,10 @@ lbm_cid lbm_get_current_cid(void);
  * a guarantee that a context is running
  */
 eval_context_t *lbm_get_current_context(void);
-
+/** Surrenders remaining eval quota.
+ *  Call this from extensions that takes non-trivial amounts of time.
+ */
+void lbm_surrender_quota(void);
 /** Change the mailbox size for a given context.
  * \param ctx The context to change mailbox size for.
  * \param new_size The new size of the mailbox.
@@ -392,9 +407,9 @@ lbm_flash_status request_flash_storage_cell(lbm_value val, lbm_value *res);
  *
  * \param cid Process to deliver to.
  * \param msg Message to deliver
- * \return 0 on success negative value on error.
+ * \return true on success false on failure.
  */
-int lbm_find_receiver_and_send(lbm_cid cid, lbm_value msg);
+bool lbm_find_receiver_and_send(lbm_cid cid, lbm_value msg);
 /** Perform garbage collection,
  * If this is called from another thread than the eval thread, evaluation must be
  * paused! Or there will be lots of trouble!

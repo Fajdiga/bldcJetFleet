@@ -36,14 +36,19 @@
 #define LBM_MEMORY_SIZE_28K LBM_MEMORY_SIZE_64BYTES_TIMES_X(448)
 #define LBM_MEMORY_BITMAP_SIZE_28K LBM_MEMORY_BITMAP_SIZE(448)
 
-#define HEAP_SIZE					(2048 + 256 + 160)
+#ifndef EXTENSION_STORAGE_SIZE
+#define EXTENSION_STORAGE_SIZE		300
+#endif
+
+#ifndef ADC_SAMPLE_MAX_LEN
+#define ADC_SAMPLE_MAX_LEN			1000 // 20 byte per sample
+#endif
+
+#define HEAP_SIZE					(((1024 * 24 + (1000 - ADC_SAMPLE_MAX_LEN) * 20) - (EXTENSION_STORAGE_SIZE * sizeof(lbm_extension_t))) / sizeof(lbm_cons_t))
 #define LISP_MEM_SIZE				LBM_MEMORY_SIZE_28K
 #define LISP_MEM_BITMAP_SIZE		LBM_MEMORY_BITMAP_SIZE_28K
 #define GC_STACK_SIZE				160
 #define PRINT_STACK_SIZE			128
-#ifndef EXTENSION_STORAGE_SIZE
-	#define EXTENSION_STORAGE_SIZE		298
-#endif
 #define EXT_LOAD_CALLBACK_LEN		20
 #define PROF_DATA_NUM				30
 
@@ -92,7 +97,11 @@ void lispif_init(void) {
 		lispif_restart(false, true, true);
 	}
 
+#ifdef LBM_USE_TIME_QUOTA
+	lbm_set_eval_time_quota(2000);
+#else
 	lbm_set_eval_step_quota(50);
+#endif
 
 	chMtxObjectInit(&lbm_mutex);
 }
@@ -337,6 +346,7 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 				commands_printf_lisp("Recovered arrays: %u\n", lbm_heap_state.gc_recovered_arrays);
 				commands_printf_lisp("Marked: %d\n", lbm_heap_state.gc_marked);
 				commands_printf_lisp("GC SP max: %u (size %u)\n", lbm_get_max_stack(&lbm_heap_state.gc_stack), lbm_heap_state.gc_stack.size);
+				commands_printf_lisp("Global env cells: %u\n", lbm_get_global_env_size());
 				commands_printf_lisp("--(Symbol and Array memory)--\n");
 				commands_printf_lisp("Memory size: %u bytes\n", lbm_memory_num_words() * 4);
 				commands_printf_lisp("Memory free: %u bytes\n", lbm_memory_num_free() * 4);
@@ -702,8 +712,6 @@ bool lispif_restart(bool print, bool load_code, bool load_imports) {
 			ext_load_callbacks[i]();
 		}
 
-		lbm_set_dynamic_load_callback(lispif_vesc_dynamic_loader);
-
 		int code_chars = 0;
 		if (code_data) {
 			code_chars = strnlen(code_data, code_len);
@@ -715,7 +723,7 @@ bool lispif_restart(bool print, bool load_code, bool load_imports) {
 
 		const_heap_max_ind = 0;
 		const_heap_ptr = (lbm_uint*)flash_helper_code_data_raw(CODE_IND_LISP_CONST);
-		lbm_const_heap_init(const_heap_write, &const_heap, const_heap_ptr, 1024 * 128);
+		lbm_const_heap_init(const_heap_write, &const_heap, const_heap_ptr, 256 * 128);
 
 		// Load imports
 		if (load_imports) {

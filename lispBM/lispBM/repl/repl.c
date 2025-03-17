@@ -306,7 +306,7 @@ char * load_file(char *filename) {
   int i = 0;
   size_t len = strlen(filename);
   // leading whitespace
-  while (filename[i] == ' ' && filename[i] != 0) {
+  while (filename[i] == ' ') {
     i ++;
   }
   //trailing whitespace
@@ -317,10 +317,10 @@ char * load_file(char *filename) {
     else break;
     len--;
   }
-  FILE *fp;
+
   if (strlen(&filename[i]) > 0) {
     errno = 0;
-    fp = fopen(&filename[i], "r");
+    FILE *fp = fopen(&filename[i], "r");
     if (!fp) {
       return NULL;
     }
@@ -376,10 +376,9 @@ void ctx_exists(eval_context_t *ctx, void *arg1, void *arg2) {
 }
 
 void lookup_local(eval_context_t *ctx, void *arg1, void *arg2) {
-  char output[1024];
   lbm_value res;
   if (lbm_env_lookup_b(&res, (lbm_value)arg1, ctx->curr_env)) {
-
+    char output[1024];
     lbm_print_value(output, 1024, res);
     printf("CTX %d: %s = %s\n", (int32_t)ctx->id, (char *)arg2, output);
   } else {
@@ -871,7 +870,6 @@ bool evaluate_expressions(void) {
 #define NAME_BUF_SIZE 1024
 
 void startup_procedure(void) {
-  char name_buf[NAME_BUF_SIZE];
 
   if (env_input_file) {
     FILE *fp = fopen(env_input_file, "r");
@@ -892,6 +890,7 @@ void startup_procedure(void) {
       if (name_len ==  0) {
         terminate_repl(REPL_EXIT_ZERO_LENGTH_KEY_IN_ENV_FILE);
       }
+      char name_buf[NAME_BUF_SIZE];
       memset(name_buf, 0, NAME_BUF_SIZE);
       n = fread(name_buf, 1, name_len, fp);
       if (n < name_len) {
@@ -1165,11 +1164,10 @@ int commands_printf_lisp(const char* format, ...) {
 
 static void vesc_lbm_done_callback(eval_context_t *ctx) {
   lbm_cid cid = ctx->id;
-  lbm_value t = ctx->r;
 
   if (drop_reader(cid)) {
     char output[128];
-    lbm_print_value(output, sizeof(output), t);
+    lbm_print_value(output, sizeof(output), ctx->r);
     commands_printf_lisp("> %s", output);
   }
 }
@@ -1406,10 +1404,10 @@ float get_cpu_usage(void) {
   snprintf(fname, sizeof(fname), "/proc/self/stat") ;
   FILE *fp = fopen(fname, "r") ;
   if ( fp ) {
-    long unsigned int ucpu = 0, scpu=0, tot_cpu = 0 ;
+    long unsigned int ucpu = 0, scpu=0;
     if ( fscanf(fp, "%*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s  %lu %lu",
                 &ucpu, &scpu) == 2 ) {
-      tot_cpu = ucpu + scpu ;
+      long unsigned int tot_cpu = ucpu + scpu ;
 
       long unsigned int ticks = tot_cpu - get_cpu_last_ticks;
       unsigned int t_now = timestamp();
@@ -1445,8 +1443,8 @@ void repl_process_cmd(unsigned char *data, unsigned int len,
     int32_t ind = 0;
     uint8_t send_buffer[65];
     send_buffer[ind++] = COMM_FW_VERSION;
-    send_buffer[ind++] = 1;
-    send_buffer[ind++] = 1;
+    send_buffer[ind++] = 6;
+    send_buffer[ind++] = 05;
 
     strcpy((char*)(send_buffer + ind), HW_NAME);
     ind += (int32_t)strlen(HW_NAME) + 1;
@@ -1461,7 +1459,7 @@ void repl_process_cmd(unsigned char *data, unsigned int len,
     send_buffer[ind++] = FW_TEST_VERSION_NUMBER;
 
     send_buffer[ind++] = HW_TYPE_CUSTOM_MODULE;
-    send_buffer[ind++] = 1; // One custom config
+    send_buffer[ind++] = 0; // No custom config
 
     send_buffer[ind++] = 0; // No phase filters
     send_buffer[ind++] = 0; // No HW QML
@@ -1477,7 +1475,13 @@ void repl_process_cmd(unsigned char *data, unsigned int len,
     strcpy((char*)(send_buffer + ind), FW_NAME);
     ind += (int32_t)strlen(FW_NAME) + 1;
 
-    buffer_append_uint32(send_buffer, 967, &ind); // main_calc_hw_crc()
+    reply_func(send_buffer, (unsigned int)ind);
+  } break;
+
+  case COMM_PING_CAN: {
+    int32_t ind = 0;
+    uint8_t send_buffer[1];
+    send_buffer[ind++] = COMM_PING_CAN;
     reply_func(send_buffer, (unsigned int)ind);
   } break;
 
@@ -1636,6 +1640,7 @@ void repl_process_cmd(unsigned char *data, unsigned int len,
         commands_printf_lisp("Recovered arrays: %u\n", lbm_heap_state.gc_recovered_arrays);
         commands_printf_lisp("Marked: %d\n", lbm_heap_state.gc_marked);
         commands_printf_lisp("GC SP max: %u (size %u)\n", lbm_get_max_stack(&lbm_heap_state.gc_stack), lbm_heap_state.gc_stack.size);
+        commands_printf_lisp("Global env cells: %"PRI_UINT"\n", lbm_get_global_env_size());
         commands_printf_lisp("--(Symbol and Array memory)--\n");
         commands_printf_lisp("Memory size: %u bytes\n", lbm_memory_num_words() * 4);
         commands_printf_lisp("Memory free: %u bytes\n", lbm_memory_num_free() * 4);
@@ -2157,6 +2162,7 @@ int main(int argc, char **argv) {
         printf("Marked: %"PRI_INT"\n", heap_state.gc_marked);
         printf("GC stack size: %"PRI_UINT"\n", lbm_get_gc_stack_size());
         printf("GC SP max: %"PRI_UINT"\n", lbm_get_gc_stack_max());
+        printf("Global env cells: %"PRI_UINT"\n", lbm_get_global_env_size());
         printf("--(Symbol and Array memory)---------------------------------\n");
         printf("Memory size: %"PRI_UINT" Words\n", lbm_memory_num_words());
         printf("Memory free: %"PRI_UINT" Words\n", lbm_memory_num_free());
@@ -2167,9 +2173,9 @@ int main(int argc, char **argv) {
         printf("Symbol table size FLASH: %"PRI_UINT" Bytes\n", lbm_get_symbol_table_size_flash());
         printf("Symbol names size FLASH: %"PRI_UINT" Bytes\n", lbm_get_symbol_table_size_names_flash());
         printf("--(Flash)--\n");
-        printf("Size: %u words\n", const_heap.size);
-        printf("Used words: %d\n", const_heap.next);
-        printf("Free words: %d\n", const_heap.size - const_heap.next);
+        printf("Size: %"PRI_UINT" words\n", const_heap.size);
+        printf("Used words: %"PRI_UINT"\n", const_heap.next);
+        printf("Free words: %"PRI_UINT"\n", const_heap.size - const_heap.next);
         free(str);
       } else if (strncmp(str, ":prof start", 11) == 0) {
         lbm_prof_init(prof_data,
@@ -2345,8 +2351,7 @@ int main(int argc, char **argv) {
         char *sym = str + i;
         lbm_uint sym_id = 0;
         if (lbm_get_symbol_by_name(sym, &sym_id)) {
-          lbm_running_iterator(lookup_local, (void*)lbm_enc_sym(sym_id), (void*)sym);
-          lbm_blocked_iterator(lookup_local, (void*)lbm_enc_sym(sym_id), (void*)sym);
+          lbm_all_ctxs_iterator(lookup_local, (void*)lbm_enc_sym(sym_id), (void*)sym);
         } else {
           printf("symbol does not exist\n");
         }

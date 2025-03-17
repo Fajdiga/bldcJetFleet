@@ -6,7 +6,19 @@ include $(LISPBM)/lispbm.mk
 PLATFORM_INCLUDE = -I$(LISPBM)/platform/linux/include
 PLATFORM_SRC     = $(LISPBM)/platform/linux/src/platform_mutex.c
 
-CCFLAGS =  -g -O2 -Wall -Wconversion -Wsign-compare -pedantic -std=c11 -DFULL_RTS_LIB -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast
+LBMFLAGS = -DFULL_RTS_LIB \
+	   -DLBM_USE_DYN_MACROS \
+           -DLBM_USE_DYN_LOOPS \
+           -DLBM_USE_DYN_FUNS \
+           -DLBM_USE_DYN_ARRAYS \
+           -DLBM_USE_DYN_DEFSTRUCT \
+           -DLBM_USE_TIME_QUOTA \
+           -DLBM_USE_ERROR_LINENO
+
+
+
+
+CCFLAGS =  -g -O2 -Wall -Wconversion -Wsign-compare -pedantic -std=c11 $(LBMFLAGS) -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast
 
 PICCFLAGS = -O2 -Wall -Wconversion -pedantic -std=c11
 
@@ -15,8 +27,7 @@ LISPBM_SRC += $(LISPBM_EVAL_CPS_SRC)
 REPL_SRC= repl.c \
 	  repl_exts.c \
           crc.c \
-          packet.c \
-          buffer.c
+          packet.c
 
 
 ifdef HEAP_VIS
@@ -62,13 +73,13 @@ install: all
 debug: CCFLAGS += -g
 debug: repl
 
-repl: $(REPL_SRC) $(LISPBM_SRC) $(LISPBM_DEPS)
+repl: $(REPL_SRC) $(LISPBM_SRC) $(LISPBM_DEPS) $(LISPBM_H)
 	gcc $(CCFLAGS) $(LISPBM_SRC) $(PLATFORM_SRC) $(LISPBM_FLAGS) $(REPL_SRC) -o repl $(LISPBM_INC) $(PLATFORM_INCLUDE) $(LIBS)
 
-repl_cov: $(REPL_SRC) $(LISPBM_SRC) $(LISPBM_DEPS)
+repl_cov: $(REPL_SRC) $(LISPBM_SRC) $(LISPBM_DEPS) $(LISPBM_H)
 	gcc $(CCFLAGS_COV) $(LISPBM_SRC) $(PLATFORM_SRC) $(LISPBM_FLAGS) $(REPL_SRC) -o repl_cov $(LISPBM_INC) $(PLATFORM_INCLUDE) $(LIBS)
 
-pirepl: $(REPL_SRC) $(LISPBM_SRC) $(LISPBM_DEPS)
+pirepl: $(REPL_SRC) $(LISPBM_SRC) $(LISPBM_DEPS) $(LISPBM_H)
 	gcc $(PICCFLAGS) $(LISPBM_SRC) $(PLATFORM_SRC) $(LISPBM_FLAGS) $(REPL_SRC) -o repl $(LISPBM_INC) $(PLATFORM_INCLUDE) $(LIBS)
 
 clean:

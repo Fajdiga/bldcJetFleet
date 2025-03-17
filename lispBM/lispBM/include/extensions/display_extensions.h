@@ -54,6 +54,7 @@ typedef struct {
 
 
 typedef struct {
+  uint32_t magic;
   int color1;    // I dont know why these are int when most uses of them are as if uint32_t.
   int color2;
   uint16_t param1;
@@ -62,6 +63,8 @@ typedef struct {
   COLOR_TYPE type;
   uint32_t *precalc;
 } color_t;
+
+#define COLOR_MAGIC (uint32_t)0x4C4F4300
 
 #define COLOR_PRECALC_LEN	512
 
@@ -114,13 +117,19 @@ static inline bool image_buffer_is_valid(uint8_t *data, lbm_uint size) {
 }
 
 static inline bool array_is_image_buffer(lbm_value v) {
-  bool res = lbm_is_array_r(v);
-  if (res) {
-    lbm_array_header_t *arr = (lbm_array_header_t *)lbm_car(v);
-    res = image_buffer_is_valid((uint8_t*)arr->data, arr->size);
+  lbm_array_header_t *arr = lbm_dec_array_r(v);
+  return arr && image_buffer_is_valid((uint8_t*)arr->data, arr->size);
+}
+
+static inline lbm_array_header_t *get_image_buffer(lbm_value v) {
+  lbm_array_header_t *res = NULL;
+  lbm_array_header_t *arr = lbm_dec_array_r(v);
+  if (arr && image_buffer_is_valid((uint8_t*)arr->data, arr->size)) {
+    res = arr;
   }
   return res;
 }
+
 
 static inline uint32_t color_apply_precalc(color_t color, int x, int y) {
   int pos;
@@ -160,10 +169,19 @@ static inline uint32_t color_apply_precalc(color_t color, int x, int y) {
 #define COLOR_TO_RGB888(color, x, y) (color.type == COLOR_REGULAR ? (uint32_t)color.color1 : COLOR_CHECK_PRE(color, x, y))
 
 // Interface
+
+bool display_is_symbol_up(lbm_value v);
+bool display_is_symbol_down(lbm_value v);
+
+color_format_t sym_to_color_format(lbm_value v);
+uint32_t image_dims_to_size_bytes(color_format_t fmt, uint16_t width, uint16_t height);
+
+void putpixel(image_buffer_t* img, int x_i, int y_i, uint32_t c);
+uint32_t getpixel(image_buffer_t* img, int x_i, int y_i);
+
 bool lbm_display_is_color(lbm_value v);
 uint32_t lbm_display_rgb888_from_color(color_t color, int x, int y);
 void image_buffer_clear(image_buffer_t *img, uint32_t cc);
-
 
 void lbm_display_extensions_init(void);
 void lbm_display_extensions_set_callbacks(

@@ -14,23 +14,31 @@ This is the VESC-integration of [lispBM](https://github.com/svenssonjoel/lispBM)
 
 [LispBM Language Reference](lispBM/doc/lbmref.md)
 
-## Programming Manual
+The language reference is probably the most important document to read when working with with LBM. It describes the concepts of the language and, importantly, all basic functions it provides for various operations.
 
-This is the work-in-progress programming manual for LispBM. Note that the examples in the manual use the REPL quite a lot. All of them also work in the VESC Tool REPL (which is below the console below the code editor) when you are connected to a VESC and will be executed on the VESC itself. The results of the commands will be printed in the console. From the VESC Tool REPL you also have access to all functions and variables in the program that you have uploaded.
+**Libraries**  
 
-[Chapter 1: Introduction to programming in LispBM](lispBM/doc/manual/ch1_introduction.md)  
-[Chapter 2: List Processing](lispBM/doc/manual/ch2_list_processing.md)  
-[Chapter 3: Concurrency](lispBM/doc/manual/ch3_concurrency.md)
+[Libraries](lispBM/doc/dynref.md)
+
+Most of these are available on ESC and Express. They are loaded dynamically when used the first time.
+
+**LBM Gotchas and Caveats**
+
+[Gotchas](lispBM/doc/gotchas.md)
 
 ## VESC Express Libraries
 
 The VESC Express has some extra libraries that are documented in separate documents.
 
-**VESC Express Display Driver**  
+**Display Driver**  
 
-[VESC Express Display Driver](https://github.com/vedderb/vesc_express/blob/main/main/display/README.md)
+[Display Driver](lispBM/doc/displayref.md)
 
 The display driver allows driving many common displays using SPI, such as the ST7789, ST7735, ILI9341, ILI9488, SH8501, SSD1306 and SSD1351. There are accelerated rendering and font extensions that can be used from LispBM.  
+
+**TTF Font Renderer for Display Driver**  
+
+[TTF Font Renderer](lispBM/doc/ttfref.md)
 
 **VESC Express Wifi and TCP**  
 
@@ -136,6 +144,20 @@ which outputs
 dev-1| This message has
 dev-1| a clear origin!
 ```
+
+---
+
+#### set-fw-name
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(set-fw-name str)
+```
+
+Set (or override if already set in the firmware) firmware name. The firmware name is printed in the CAN-list in VESC Tool when it is set. It can also be used by packages to determine if they are compatible with the connected hardware.
 
 ---
 
@@ -283,6 +305,7 @@ Get value from BMS. Examples:
 (get-bms-val 'bms-msg-age) ; Age of last message from BMS in seconds
 (get-bms-val 'bms-chg-allowed) ; Charging allowed (Added in 6.05, Express only)
 (get-bms-val 'bms-data-version) ; Data version (added in 6.06)
+(get-bms-val 'bms-status) ; Status string (added in 6.06)
 ```
 
 **Note**  
@@ -375,6 +398,36 @@ Start or stop balancing. 1 means start and 0 means stop.
 ```
 
 Zero current measurement offset on BMS. Has to be done while no current (or charge-current on charge-only BMS) is flowing. Will be sent to every BMS on the CAN-bus.
+
+---
+
+#### bms-st
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(bms-st can-id)
+```
+
+Run self-test on BMS with can-id. Returns the following list on success, otherwise timeout:
+
+```clj
+(
+    1 ; Balance IC OK
+    1 ; Balamce connection check OK
+    8 ; Cell num (8 Cells)
+    (1 3.691400f32 3.561700f32) ; Cell 1 OK, V_BAL, V_NO_BAL
+    (1 3.687200f32 3.367500f32) ; Cell 2 OK, V_BAL, V_NO_BAL
+    (1 3.687500f32 3.377500f32) ; Cell 3 OK, V_BAL, V_NO_BAL
+    (1 3.688900f32 3.389400f32) ; Cell 4 OK, V_BAL, V_NO_BAL
+    (1 3.690100f32 3.401900f32) ; Cell 5 OK, V_BAL, V_NO_BAL
+    (1 3.688800f32 3.413800f32) ; Cell 6 OK, V_BAL, V_NO_BAL
+    (1 3.689000f32 3.424600f32) ; Cell 7 OK, V_BAL, V_NO_BAL
+    (1 3.688900f32 3.433300f32) ; Cell 8 OK, V_BAL, V_NO_BAL
+)
+```
 
 ---
 
@@ -1149,6 +1202,20 @@ Position control. Set motor position in degrees, range 0.0 to 360.0.
 ```
 
 Run FOC in open loop. Useful to test thermal properties of motors and power stages.
+
+---
+
+#### foc-openloop-phase
+
+| Platforms | Firmware |
+|---|---|
+| ESC | 6.06+ |
+
+```clj
+(foc-openloop-phase current phase)
+```
+
+Run FOC in open loop in phase mode. Phase is the electrical position of the openloop-vector in degrees, range 0.0 to 360.0.
 
 ---
 
@@ -2241,6 +2308,28 @@ Actively scan the CAN-bus and return a list with devices that responded. This fu
 
 ---
 
+#### can-ping
+
+| Platforms | Firmware |
+|---|---|
+| ESC, Express | 6.06+ |
+
+```clj
+(can-ping id)
+```
+
+Ping can-device with id. Valid IDs are 0 to 253. If the device responds 0, 1 or 2 is returned, meaning
+
+| Response | HW Type |
+|---|---|
+| 0 | ESC |
+| 1 | Old BMS |
+| 2 | Custom (e.g. Express or new BMS) |
+
+If the device does not respond nil is returned.
+
+---
+
 #### can-local-id
 
 | Platforms | Firmware |
@@ -2252,6 +2341,25 @@ Actively scan the CAN-bus and return a list with devices that responded. This fu
 ```
 
 Get local CAN ID.
+
+---
+
+#### can-update-baud
+
+| Platforms | Firmware |
+|---|---|
+| ESC, Express | 6.06+ |
+
+```clj
+(can-update-baud kbits)
+```
+
+Update CAN baudrate locally and on connected CAN-devices. kbits is the new baudrate. Note that this is only supported when all CAN-devices have firmware 6.06 or later. If the update fails the CAN-bus can become unusable until the settings are restored manually on each device. Valid baudrates in kbits are 125, 250, 500, 1000, 10, 20, 50, 75 and 100. Example:
+
+```clj
+(can-update-baud 1000) ; Update baudrate to 1 MBit/s
+(can-update-baud 250) ; Update baudrate to 250 KBit/s
+```
 
 ---
 
@@ -3474,7 +3582,7 @@ The following selection of app and motor parameters can be read and set from Lis
 'l-min-duty             ; Minimum duty cycle
 'l-max-duty             ; Maximum duty cycle
 'l-watt-min             ; Minimum power regen in W (a negative value)
-'l-watt-max             ; Maximum power regen in W
+'l-watt-max             ; Maximum power in W
 'l-battery-cut-start    ; Voltage where current starts to get reduced
 'l-battery-cut-end      ; Voltage below which current is not allowed
 'l-temp-motor-start     ; Temperature where motor current starts to get reduced
@@ -3672,6 +3780,8 @@ The following selection of app and motor parameters can be read and set from Lis
                         ; 4: 10K
                         ; 5: 20K
                         ; 6: 50K
+                        ; 7: 75K
+                        ; 8: 100K
 'can-status-rate-hz     ; CAN status message rate
 'wifi-mode              ; Wifi mode
                         ; 0: Disabled
@@ -3694,6 +3804,8 @@ The following selection of app and motor parameters can be read and set from Lis
                         ; 3: Enabled with scripting
 'ble-name               ; Device name (also the name that shows up in VESC Tool)
 'ble-pin                ; BLE pin code
+'ble-service-capacity   ; BLE Service Capacity
+'ble-chr-descr-capacity ; BLE Characteristics and Descriptor Capacity
 ```
 
 ---
@@ -4965,23 +5077,25 @@ The following example shows how to spawn a thread that handles SID (standard-id)
 Possible events to register are
 
 ```clj
+; ESC and Express
 (event-enable 'event-can-sid)  ; -> (event-can-sid . (id . data)), where id is U32 and data is a byte array
 (event-enable 'event-can-eid)  ; -> (event-can-eid . (id . data)), where id is U32 and data is a byte array
 (event-enable 'event-data-rx)  ; -> (event-data-rx . data), where data is a byte array
+
+; ESC Only
 (event-enable 'event-shutdown) ; -> event-shutdown
 (event-enable 'event-icu-width) ; -> (event-icu-width . (width . period))
 (event-enable 'event-icu-period) ; -> (event-icu-period . (width . period))
 
-; BMS events (currently express only)
+; Express only
 (event-enable 'event-bms-chg-allow) ; -> (event-bms-chg-allow allow)
 (event-enable 'event-bms-bal-ovr) ; -> (event-bms-bal-ovr ch bal)
 (event-enable 'event-bms-reset-cnt) ; -> event-bms-reset-cnt
 (event-enable 'event-bms-force-bal) ; -> (event-bms-force-bal force)
 (event-enable 'event-bms-zero-ofs) ; -> event-bms-zero-ofs
-
-; Other express only events
 (event-enable 'event-ble-rx) ; -> (event-ble-rx handle data)
 (event-enable 'event-wifi-disconnect) ; -> ('event-wifi-disconnect reason from-extension)
+(event-enable 'event-esp-now-rx) ; -> (event-esp-now-rx src des data rssi)
 ```
 
 The CAN-frames arrive whenever data is received on the CAN-bus and data-rx is received for example when data is sent from a Qml-script in VESC Tool.
@@ -4998,7 +5112,7 @@ This event is sent when extended id CAN-frames are received.
 This event is sent when custom app data is sent from VESC Tool or other connected devices. This works using all communication ports including USB, UART and CAN-bus.
 
 **event-shutdown**  
-This event is sent when the VESC is about to shut down. Note that this event currently only works on hardware with a power switch. If that is not the case you could try to, for example, monitor the input voltage and simulate this event when it drops below a set level.
+This event is sent when the ESC is about to shut down. Note that this event currently only works on hardware with a power switch. If that is not the case you could try to, for example, monitor the input voltage and simulate this event when it drops below a set level.
 
 **event-icu-width**  
 This event is sent when the input capture unit captures a pulse. Both the pulse width and the period of the last pulse are provided.
@@ -5007,16 +5121,19 @@ This event is sent when the input capture unit captures a pulse. Both the pulse 
 This event is sent when the input capture unit ends a period and the next pulse starts. Both the pulse width and the period are provided.
 
 **event-ble-rx** (Express exclusive)  
-This event is sent when a client connected to the VESC writes a value to a
+This event is sent when a client connected to the Express writes a value to a
 characteristic or descriptor. Read the
 [BLE docs](https://github.com/vedderb/vesc_express/tree/main/main/ble#events)
 for details.
 
 **event-wifi-disconnect** (Express exclusive)  
-This event is sent when the VESC disconnects from the currently connected
+This event is sent when the Express disconnects from the currently connected
 network for any reason. Read the
 [Wi-Fi docs](https://github.com/vedderb/vesc_express/tree/main/main/wifi#events)
 for details.
+
+**event-esp-now-rx**  
+This event is sent when ESP-NOW data is received.
 
 ---
 
@@ -5464,6 +5581,79 @@ Lowering this value is useful if there are one or more timing-critical threads (
 ```
 
 Change the stack size for the garbage collector. If the GC stack is too small the program can crash during garbage collection and print a message stating that it ran out of GC stack. If that happens increasing the size from the default of 160 can help. Note that the GC stack is on LBM memory and increasing its size leaves less memory available for other things.
+
+---
+
+## Mutexes
+
+Mutexes can be used to lock resources from other contexts. Example:
+
+
+```clj
+(def mtx (mutex-create))
+
+(defun print-numbers() {
+        (mutex-lock mtx)
+        (print 1)
+        (sleep 0.5)
+        (print 2)
+        (sleep 0.5)
+        (print 3)
+        (sleep 0.5)
+        (print 4)
+        (mutex-unlock mtx)
+})
+
+(spawn 100 print-numbers)
+(sleep 0.1)
+(spawn 100 print-numbers)
+(sleep 0.1)
+(spawn 100 print-numbers)
+(sleep 0.1)
+(spawn 100 print-numbers)
+```
+
+---
+
+#### mutex-create
+
+| Platforms | Firmware |
+|---|---|
+| ESC, Express | 6.06+ |
+
+```clj
+(mutex-create)
+```
+
+Creates a mutex object. The mutex object is a dotted pair (ls . last) which contains two references into a single list, implementing a O(1)-insert-last O(1)-remove-first queue. At the surface though, it is a regular lisp dotted pair that can be destroyed with standard lisp functionality, no protection!
+
+---
+
+#### mutex-lock
+
+| Platforms | Firmware |
+|---|---|
+| ESC, Express | 6.06+ |
+
+```clj
+(mutex-lock mtx)
+```
+
+Lock mutex mtx. If mtx already is locked the current context will sleep until it is unlocked.
+
+---
+
+#### mutex-unlock
+
+| Platforms | Firmware |
+|---|---|
+| ESC, Express | 6.06+ |
+
+```clj
+(mutex-unlock mtx)
+```
+
+Unlock mutex mtx. If one or more contexts are waiting on this mutex the next one in the waiting queue will be unblocked.
 
 ---
 
@@ -6362,6 +6552,20 @@ Rename file (same as moving a file). Returns true on success, nil otherwise.
 
 ---
 
+#### f-sync
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(f-sync file)
+```
+
+Write buffered changes to the memory card.
+
+---
+
 #### f-fatinfo
 
 | Platforms | Firmware |
@@ -6579,7 +6783,7 @@ Write data to qml-buffer at offset. Returns true on success or nil/timeout on fa
 (lbm-run running optCanId)
 ```
 
-Run or stop the lbm-code (run if running is 1, stop otherwise). Returns true on success or nil/timeout on failure. If the optional argument optCanId is omitted or set to -1 the command is performed locally, otherwise it is performed on the CAN-device with id optCanId.
+Run or stop the lbm-code (run if running is 1, stop otherwise). Returns true on success or nil/timeout on failure. If the optional argument optCanId is omitted or set to -1 the command is performed locally, otherwise it is performed on the CAN-device with id optCanId. If running is set to 1 and LispBM already is running a restart is performed.
 
 ---
 
@@ -7236,6 +7440,20 @@ Write data to key on QML-partition. If key already exists the old data will be r
 ```
 
 Erase single key from QML-partition. This can fail if key does not exist or if (nvs-qml-init) has not been run.
+
+---
+
+#### nvs-qml-list
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(nvs-qml-list)
+```
+
+Returns a list with all existing NVS keys. If (nvs-qml-init) has not been run this always returns nil.
 
 ---
 

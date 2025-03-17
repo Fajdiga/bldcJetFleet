@@ -16,6 +16,26 @@
   (section 2 "Scheduling"
            (list evaluation-quota)))
 
+(define threads-mailbox-get
+  (ref-entry "mailbox-get"
+             (list
+              (para (list "`mailbox-get` returns the mailbox contents of a thread as a list."
+                          "The form of a `mailbox-get` expression is `(mailbox-get pid)`."
+                          "Note that `mailbox-get` does **NOT** empty the mailbox."
+                          ))
+              (code '((define f (lambda () {(sleep 1) (f)}))
+                      (define pid (spawn f))
+                      (send pid "hello world")
+                      (send pid (list 1 2 3))
+                      (send pid 'apa)
+                      (mailbox-get pid)
+                      ))
+              end)))
+
+(define chapter-threads
+  (section 2 "Threads"
+           (list threads-mailbox-get)))
+
 
 (define num-free
   (ref-entry "mem-num-free"
@@ -82,9 +102,19 @@
                       ))
               end)))
 
+(define gc-is-always-gc
+    (ref-entry "is-always-gc"
+	       (list
+		(para (list "The `is-always-gc` predicate is true if LBM is built with the LBM_ALWAYS_GC debug flag."
+			    ))
+		(code '((is-always-gc)
+			))
+		end)))
+
 (define chapter-gc
   (section 2 "GC"
-           (list gc-stack)))
+           (list gc-stack
+		 gc-is-always-gc)))
 
 
 
@@ -253,7 +283,34 @@
            (list version
                  arch
                  word
-           )))
+                 )))
+
+(define hide-em
+  (ref-entry "hide-trapped-error"
+             (list
+              (para (list "The default behavior is to print error messages even if the error is trapped."
+                          "Trapped errors can be hidden by calling this function at the beginning of a program."
+                          ))
+              (code '((hide-trapped-error)
+                      ))
+              end)))
+
+(define show-em
+  (ref-entry "show-trapped-errors"
+             (list
+              (para (list "If you have hidden trapped errors they can be toggled back to being showed again"
+                          "using this function."
+                          ))
+              (code '((show-trapped-error)
+                      ))
+              end)))
+  
+
+(define chapter-errors
+  (section 2 "Errors"
+           (list hide-em
+                 show-em
+                 )))
 
 
 (define manual
@@ -266,11 +323,13 @@
                          "Minimal mode is the default when compiling LBM. To get the"
                          "full mode the `-DFULL_RTS_LIB` flag must be used when compiling."
                          ))
+             chapter-errors
              chapter-environments
              chapter-gc
              chapter-memory
              chapter-scheduling
              chapter-symboltable
+             chapter-threads
              chapter-versioning
              ))
    info

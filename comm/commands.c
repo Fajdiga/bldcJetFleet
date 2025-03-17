@@ -1668,6 +1668,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 	case COMM_BM_MEM_READ:
 	case COMM_GET_IMU_CALIBRATION:
 	case COMM_BM_MEM_WRITE:
+	case COMM_CAN_UPDATE_BAUD_ALL:
 		if (!is_blocking) {
 			memcpy(blocking_thread_cmd_buffer, data - 1, len + 1);
 			blocking_thread_cmd_len = len + 1;
@@ -1881,6 +1882,7 @@ void commands_apply_mcconf_hw_limits(mc_configuration *mcconf) {
 
 	float ctrl_loop_freq = 0.0;
 
+#if FOC_CONTROL_LOOP_FREQ_DIVIDER < 2 // When skipping cycles you are on your own!
 	// This limit should always be active, as starving the threads never
 	// makes sense.
 #ifdef HW_LIM_FOC_CTRL_LOOP_FREQ
@@ -1897,6 +1899,7 @@ void commands_apply_mcconf_hw_limits(mc_configuration *mcconf) {
 		ctrl_loop_freq = mcconf->foc_f_zv / 2.0;
 #endif
     }
+#endif
 #endif
 
     if (ctrl_loop_freq >= (hw_lim_upper(HW_LIM_FOC_CTRL_LOOP_FREQ) * 0.9)) {
@@ -2141,9 +2144,11 @@ static THD_FUNCTION(blocking_thread, arg) {
 				float current = buffer_get_float32(data, 1e3, &ind);
 
 				mcconf->motor_type = MOTOR_TYPE_FOC;
-				mcconf->foc_f_zv = 10000.0;
-				mcconf->foc_current_kp = 0.01;
-				mcconf->foc_current_ki = 10.0;
+				// These parameters work for most motors if detection has not been
+				// done before, but not for all motors. For now we disable them.
+//				mcconf->foc_f_zv = 10000.0;
+//				mcconf->foc_current_kp = 0.01;
+//				mcconf->foc_current_ki = 10.0;
 				mc_interface_set_configuration(mcconf);
 
 				float offset = 0.0;
@@ -2455,6 +2460,33 @@ static THD_FUNCTION(blocking_thread, arg) {
 			buffer_append_float32(send_buffer, imu_cal[7], 1e6, &ind);
 			buffer_append_float32(send_buffer, imu_cal[8], 1e6, &ind);
 
+			if (send_func_blocking) {
+				send_func_blocking(send_buffer, ind);
+			}
+		} break;
+
+		case COMM_CAN_UPDATE_BAUD_ALL: {
+			int32_t ind = 0;
+			uint32_t kbits = buffer_get_int16(data, &ind);
+			uint32_t delay_msec = buffer_get_int16(data, &ind);
+
+			CAN_BAUD baud = comm_can_kbits_to_baud(kbits);
+			if (baud != CAN_BAUD_INVALID) {
+				for (int i = 0;i < 10;i++) {
+					comm_can_send_update_baud(kbits, delay_msec);
+					chThdSleepMilliseconds(50);
+				}
+
+				comm_can_set_baud(baud, delay_msec);
+
+				app_configuration *appconf = (app_configuration*)app_get_configuration();
+				appconf->can_baud_rate = baud;
+				conf_general_store_app_configuration(appconf);
+			}
+
+			ind = 0;
+			send_buffer[ind++] = packet_id;
+			send_buffer[ind++] = baud != CAN_BAUD_INVALID;
 			if (send_func_blocking) {
 				send_func_blocking(send_buffer, ind);
 			}

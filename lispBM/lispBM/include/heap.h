@@ -337,6 +337,26 @@ lbm_value lbm_heap_allocate_list_init(unsigned int n, ...);
  * \return allocated list or error symbol
  */
 char *lbm_dec_str(lbm_value val);
+/** Decode a readable array, if the argument is not an array the result is NULL
+  * \param val value to decode.
+  * \return array pointer or NULL.
+  */
+lbm_array_header_t *lbm_dec_array_r(lbm_value val);
+/** Decode an a read/write array, if the argument is not an array the result is NULL
+ * \param val value to decode.
+ * \return array pointer or NULL.
+ */
+lbm_array_header_t *lbm_dec_array_rw(lbm_value val);
+/** Decode a readable lisp array, if the argument is not an array the result is NULL
+  * \param val value to decode.
+  * \return array pointer or NULL.
+  */
+lbm_array_header_t *lbm_dec_lisp_array_r(lbm_value val);
+/** Decode an a read/write lisp array, if the argument is not an array the result is NULL
+ * \param val value to decode.
+ * \return array pointer or NULL.
+ */
+lbm_array_header_t *lbm_dec_lisp_array_rw(lbm_value val);
 /** Decode an lbm_value representing a char channel into an lbm_char_channel_t pointer.
  *
  * \param val Value
@@ -803,7 +823,7 @@ static inline int32_t lbm_dec_i32(lbm_value x) {
  * \return decoded int64_t.
  */
 extern int64_t lbm_dec_i64(lbm_value x);
-
+  
 /**
  * Check if a value is a heap pointer
  * \param x Value to check
