@@ -26,6 +26,7 @@
 #define INVERTED_SHUNT_POLARITY
 #define SERVO_BUZZER
 #define HW_USE_BRK
+#define BRK_HIGH
 
 // Macros
 #define LED_GREEN_GPIO			GPIOB
@@ -87,9 +88,6 @@
 #endif
 #ifndef VIN_R1
 #define VIN_R1				    150000.0
-#endif
-#ifndef VIN_R2
-#define VIN_R2				    3300.0
 #endif
 #ifndef CURRENT_AMP_GAIN
 #define CURRENT_AMP_GAIN		20.0
@@ -227,18 +225,14 @@
 #ifndef MCCONF_L_MIN_VOLTAGE
 #define MCCONF_L_MIN_VOLTAGE			20.0		// Minimum input voltage
 #endif
-#ifndef MCCONF_L_MAX_VOLTAGE
-#define MCCONF_L_MAX_VOLTAGE			139.0	// Maximum input voltage
-#endif
+
 #ifndef MCCONF_DEFAULT_MOTOR_TYPE
 #define MCCONF_DEFAULT_MOTOR_TYPE		MOTOR_TYPE_FOC
 #endif
 #ifndef MCCONF_FOC_F_ZV
 #define MCCONF_FOC_F_ZV				    30000.0
 #endif
-#ifndef MCCONF_L_MAX_ABS_CURRENT
-#define MCCONF_L_MAX_ABS_CURRENT		180.0	// The maximum absolute current above which a fault is generated
-#endif
+
 #ifndef MCCONF_FOC_SAMPLE_V0_V7
 #define MCCONF_FOC_SAMPLE_V0_V7			false	// Run control loop in both v0 and v7 (requires phase shunts)
 #endif
@@ -250,9 +244,9 @@
 #endif
 
 // Setting limits
-#define HW_LIM_CURRENT			-180.0, 180.0
-#define HW_LIM_CURRENT_ABS		0.0, 220.0
-#define HW_LIM_VIN			    18.0, 140.0
+#define HW_LIM_CURRENT_IN		-150.0, 150.0
+
+
 #define HW_LIM_ERPM			    -200e3, 200e3
 #define HW_LIM_DUTY_MIN			0.0, 0.1
 #define HW_LIM_DUTY_MAX			0.0, 0.95

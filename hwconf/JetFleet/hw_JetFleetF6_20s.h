@@ -17,10 +17,28 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
     */
 
-#ifndef HW_JetFleetF6_H_
-#define HW_JetFleetF6_H_
+#ifndef HW_JetFleetF6_20s_H_
+#define HW_JetFleetF6_20s_H_
 
-#define HW_NAME					"JetFleetF6_32s"
+#define HW_NAME					"JetFleetF6_20s"
+#define HW_JetFleetF6_20s
+
+#ifndef VIN_R2
+#define VIN_R2				            4700.0
+#endif
+
+#ifndef MCCONF_L_MAX_VOLTAGE
+#define MCCONF_L_MAX_VOLTAGE			90.0	// Maximum input voltage
+#endif
+
+#ifndef MCCONF_L_MAX_ABS_CURRENT
+#define MCCONF_L_MAX_ABS_CURRENT		260.0	// The maximum absolute current above which a fault is generated
+#endif
+
+#define HW_LIM_CURRENT			        -260.0, 260.0
+#define HW_LIM_CURRENT_ABS		        0.0, 320.0
+#define HW_LIM_VIN			            18.0, 90.0
+
 
 #include "hw_JetFleetF6_core.h"
 
