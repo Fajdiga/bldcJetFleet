@@ -19,7 +19,7 @@
 
     #ifndef HW_JetFleetF6_Core_H_
     #define HW_JetFleetF6_Core_H_
-    
+
     // HW properties
     #define HW_HAS_3_SHUNTS
     #define HW_HAS_PHASE_FILTERS
@@ -27,28 +27,28 @@
     #define SERVO_BUZZER
     #define HW_USE_BRK
     #define BRK_HIGH
-    
+
     // Macros
     #define LED_GREEN_GPIO			GPIOB
     #define LED_GREEN_PIN			2
     #define LED_RED_GPIO			GPIOA
     #define LED_RED_PIN			    15
-    
+
     #define LED_GREEN_ON()			palSetPad(LED_GREEN_GPIO, LED_GREEN_PIN)
     #define LED_GREEN_OFF()			palClearPad(LED_GREEN_GPIO, LED_GREEN_PIN)
     #define LED_RED_ON()			palSetPad(LED_RED_GPIO, LED_RED_PIN)
     #define LED_RED_OFF()			palClearPad(LED_RED_GPIO, LED_RED_PIN)
-    
+
     // Phase filter
     #define PHASE_FILTER_OFF()		palSetPad(GPIOC, 15); palSetPad(GPIOC, 14); palSetPad(GPIOC, 13)
     #define PHASE_FILTER_ON()		palClearPad(GPIOC, 15); palClearPad(GPIOC, 14); palClearPad(GPIOC, 13)
-    
-    // AUX 
+
+    // AUX
     #define AUX_GPIO				GPIOC
     #define AUX_PIN					9
     #define AUX_ON()				palSetPad(AUX_GPIO, AUX_PIN)
     #define AUX_OFF()				palClearPad(AUX_GPIO, AUX_PIN)
-    
+
     // Shutdown pin
     #define HW_SHUTDOWN_GPIO		    GPIOB
     #define HW_SHUTDOWN_PIN			    0
@@ -57,12 +57,12 @@
     #define HW_SHUTDOWN_HOLD_ON()		palSetPad(HW_SHUTDOWN_GPIO, HW_SHUTDOWN_PIN)
     #define HW_SHUTDOWN_HOLD_OFF()		palClearPad(HW_SHUTDOWN_GPIO, HW_SHUTDOWN_PIN)
     #define HW_SAMPLE_SHUTDOWN()		hw_sample_shutdown_button()
-    
+
     // ADC Config
     #define HW_ADC_CHANNELS			18
     #define HW_ADC_INJ_CHANNELS		3
     #define HW_ADC_NBR_CONV			6
-    
+
     // ADC Indexes
     #define ADC_IND_SENS1			3
     #define ADC_IND_SENS2			4
@@ -79,9 +79,9 @@
     #define ADC_IND_TEMP_MOS_3		16
     #define ADC_IND_TEMP_MOTOR		9
     #define ADC_IND_VREFINT			12
-    
+
     // ADC macros and settings
-    
+
     // Component parameters (can be overridden)
     #ifndef V_REG
     #define V_REG				    3.3
@@ -95,26 +95,26 @@
     #ifndef CURRENT_SHUNT_RES
     #define CURRENT_SHUNT_RES		(0.0005 / 2.0)
     #endif
-    
+
     // Input voltage
     #define GET_INPUT_VOLTAGE()		((V_REG / 4095.0) * (float)ADC_Value[ADC_IND_VIN_SENS] * ((VIN_R1 + VIN_R2) / VIN_R2))
     // NTC Termistors
     #define NTC_RES(adc_val)		(10000.0 / ((4095.0 / (float)adc_val) - 1.0))
     #define NTC_TEMP(adc_ind)		hw_JetFleet_get_temp()
-    
+
     #define NTC_RES_MOTOR(adc_val)		(10000.0 / ((4095.0 / (float)adc_val) - 1.0))
     #define NTC_TEMP_MOTOR(beta)		(1.0 / ((logf(NTC_RES_MOTOR(ADC_Value[ADC_IND_TEMP_MOTOR]) / 10000.0) / beta) + (1.0 / 298.15)) - 273.15)
-    
+
     #define NTC_TEMP_MOS1()			(1.0 / ((logf(NTC_RES(ADC_Value[ADC_IND_TEMP_MOS]) / 10000.0) / 3380.0) + (1.0 / 298.15)) - 273.15)
     //#define NTC_TEMP_MOS2()		(1.0 / ((logf(NTC_RES(ADC_Value[ADC_IND_TEMP_MOS_2]) / 10000.0) / 3380.0) + (1.0 / 298.15)) - 273.15)
     #define NTC_TEMP_MOS3()			(1.0 / ((logf(NTC_RES(ADC_Value[ADC_IND_TEMP_MOS_3]) / 10000.0) / 3380.0) + (1.0 / 298.15)) - 273.15)
-    
+
     // Voltage on ADC channel
     #define ADC_VOLTS(ch)			((float)ADC_Value[ch] / 4096.0 * V_REG)
-    
+
     // Double samples in beginning and end for positive current measurement.
     // Useful when the shunt sense traces have noise that causes offset.
-    
+
     #ifndef CURR1_DOUBLE_SAMPLE
     #define CURR1_DOUBLE_SAMPLE		0
     #endif
@@ -124,14 +124,14 @@
     #ifndef CURR3_DOUBLE_SAMPLE
     #define CURR3_DOUBLE_SAMPLE		0
     #endif
-    
+
     // COMM-port ADC GPIOs
     #define HW_ADC_EXT_GPIO			GPIOA
     #define HW_ADC_EXT_PIN			5
     #define HW_ADC_EXT2_GPIO		GPIOA
     #define HW_ADC_EXT2_PIN			6
-    
-    
+
+
     // ICU Peripheral for servo decoding
     #define HW_USE_SERVO_TIM4
     #define HW_ICU_TIMER			TIM4
@@ -141,7 +141,7 @@
     #define HW_ICU_GPIO_AF			GPIO_AF_TIM4
     #define HW_ICU_GPIO			    GPIOB
     #define HW_ICU_PIN			    6
-    
+
     // I2C Peripheral
     #define HW_I2C_DEV			    I2CD2
     #define HW_I2C_GPIO_AF			GPIO_AF_I2C2
@@ -149,7 +149,7 @@
     #define HW_I2C_SCL_PIN			12
     #define HW_I2C_SDA_PORT			GPIOC
     #define HW_I2C_SDA_PIN			5
-    
+
     // Hall/encoder pins
     #define HW_HALL_ENC_GPIO1		GPIOC
     #define HW_HALL_ENC_PIN1		6
@@ -167,7 +167,7 @@
     #define HW_ENC_EXTI_ISR_VEC		EXTI9_5_IRQHandler
     #define HW_ENC_TIM_ISR_CH		TIM3_IRQn
     #define HW_ENC_TIM_ISR_VEC		TIM3_IRQHandler
-    
+
     // SPI pins
     #define HW_SPI_DEV			    SPID3
     #define HW_SPI_GPIO_AF			GPIO_AF_SPI3
@@ -179,17 +179,17 @@
     #define HW_SPI_PIN_MOSI			12
     #define HW_SPI_PORT_MISO		GPIOC
     #define HW_SPI_PIN_MISO			11
-    
+
     // I2C for IMU
     #define LSM6DS3_SDA_GPIO		GPIOB
     #define LSM6DS3_SDA_PIN			4
     #define LSM6DS3_SCL_GPIO		GPIOB
     #define LSM6DS3_SCL_PIN			5
-    
+
     //BRK
     #define BRK_GPIO				GPIOB
     #define BRK_PIN					12
-    
+
     // UART Peripheral
     #define HW_UART_DEV		        SD4
     #define HW_UART_GPIO_AF		    GPIO_AF_UART4
@@ -197,7 +197,7 @@
     #define HW_UART_TX_PIN		    10
     #define HW_UART_RX_PORT		    GPIOC
     #define HW_UART_RX_PIN		    11
-    
+
     // Permanent UART Peripheral (for NRF52)
     #define HW_UART_P_BAUD		    115200
     #define HW_UART_P_DEV			SD3
@@ -206,33 +206,33 @@
     #define HW_UART_P_TX_PIN		10
     #define HW_UART_P_RX_PORT	    GPIOB
     #define HW_UART_P_RX_PIN		11
-    
+
     // Measurement macros
     #define ADC_V_L1				ADC_Value[ADC_IND_SENS1]
     #define ADC_V_L2				ADC_Value[ADC_IND_SENS2]
     #define ADC_V_L3				ADC_Value[ADC_IND_SENS3]
     #define ADC_V_ZERO				(ADC_Value[ADC_IND_VIN_SENS] / 2)
-    
+
     // Macros
     #define READ_HALL1()			palReadPad(HW_HALL_ENC_GPIO1, HW_HALL_ENC_PIN1)
     #define READ_HALL2()			palReadPad(HW_HALL_ENC_GPIO2, HW_HALL_ENC_PIN2)
     #define READ_HALL3()			palReadPad(HW_HALL_ENC_GPIO3, HW_HALL_ENC_PIN3)
-    
+
     // Override dead time. See the stm32f4 reference manual for calculating this value.
     #define HW_DEAD_TIME_NSEC		450.0
-    
+
     // Default setting overrides
     #ifndef MCCONF_L_MIN_VOLTAGE
     #define MCCONF_L_MIN_VOLTAGE			20.0		// Minimum input voltage
     #endif
-    
+
     #ifndef MCCONF_DEFAULT_MOTOR_TYPE
     #define MCCONF_DEFAULT_MOTOR_TYPE		MOTOR_TYPE_FOC
     #endif
     #ifndef MCCONF_FOC_F_ZV
     #define MCCONF_FOC_F_ZV				    30000.0
     #endif
-    
+
     #ifndef MCCONF_FOC_SAMPLE_V0_V7
     #define MCCONF_FOC_SAMPLE_V0_V7			false	// Run control loop in both v0 and v7 (requires phase shunts)
     #endif
@@ -242,21 +242,21 @@
     #ifndef MCCONF_L_IN_CURRENT_MIN
     #define MCCONF_L_IN_CURRENT_MIN			-20.0	// Input current limit in Amperes (Lower)
     #endif
-    
+
     // Setting limits
     #define HW_LIM_CURRENT_IN		-150.0, 150.0
-    
-    
+
+
     #define HW_LIM_ERPM			    -200e3, 200e3
     #define HW_LIM_DUTY_MIN			0.0, 0.1
     #define HW_LIM_DUTY_MAX			0.0, 0.95
     #define HW_LIM_TEMP_FET			-40.0, 100.0
-    
+
     // Functions
     float hw_JetFleet_get_temp(void);
     bool hw_sample_shutdown_button(void);
     void buzzer_init(void);
-    
+
     #define HW_EARLY_INIT()    buzzer_init()
-    
+
     #endif /* HW_JetFleetF6_Core_H_ */

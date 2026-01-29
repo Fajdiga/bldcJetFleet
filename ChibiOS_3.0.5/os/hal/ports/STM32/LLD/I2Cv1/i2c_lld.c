@@ -155,7 +155,7 @@ static void i2c_lld_set_clock(I2CDriver *i2cp) {
 
   osalDbgCheck((i2cp != NULL) &&
                (clock_speed > 0) &&
-               (clock_speed <= 400000));
+               (clock_speed <= 1000000));
 
   /* CR2 Configuration.*/
   dp->CR2 &= (uint16_t)~I2C_CR2_FREQ;
@@ -207,6 +207,30 @@ static void i2c_lld_set_clock(I2CDriver *i2cp) {
 
     /* Sets the Maximum Rise Time for fast mode.*/
     dp->TRISE = (I2C_CLK_FREQ * 300 / 1000) + 1;
+  }
+  else {
+    /* Configure clock_div in fast mode plus (up to 1MHz).
+     * Note: STM32F4 I2Cv1 doesn't officially support FM+, but may work. */
+    osalDbgAssert((duty == FAST_DUTY_CYCLE_2) ||
+                  (duty == FAST_DUTY_CYCLE_16_9),
+                  "invalid fast mode plus duty cycle");
+
+    if (duty == FAST_DUTY_CYCLE_2) {
+      /* Fast mode plus clock_div calculate: Tlow/Thigh = 2/1.*/
+      clock_div = (uint16_t)(STM32_PCLK1 / (clock_speed * 3));
+    }
+    else if (duty == FAST_DUTY_CYCLE_16_9) {
+      /* Fast mode plus clock_div calculate: Tlow/Thigh = 16/9.*/
+      clock_div = (uint16_t)(STM32_PCLK1 / (clock_speed * 25));
+      regCCR |= I2C_CCR_DUTY;
+    }
+
+    osalDbgAssert(clock_div >= 0x01,
+                  "clock divider less then 0x01 not allowed");
+    regCCR |= (I2C_CCR_FS | (clock_div & I2C_CCR_CCR));
+
+    /* Sets the Maximum Rise Time for fast mode plus (120ns).*/
+    dp->TRISE = (I2C_CLK_FREQ * 120 / 1000) + 1;
   }
 
   osalDbgAssert((clock_div <= I2C_CCR_CCR), "the selected clock is too low");

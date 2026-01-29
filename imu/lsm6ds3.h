@@ -38,11 +38,23 @@
 
 #include "i2c_bb.h"
 
+#ifdef LSM6DS3_HW_I2C
+#include "i2c_hw.h"
+#endif
+
 void lsm6ds3_set_rate_hz(int hz);
 void lsm6ds3_set_filter(IMU_FILTER f);
 void lsm6ds3_init(i2c_bb_state *i2c_state, stkalign_t *work_area, size_t work_area_size);
 void lsm6ds3_set_read_callback(void(*func)(float *accel, float *gyro, float *mag));
 void lsm6ds3_stop(void);
+
+#ifdef LSM6DS3_HW_I2C
+void lsm6ds3_init_hw_i2c(I2CDriver *i2c_dev,
+                         stm32_gpio_t *sda_gpio, int sda_pin,
+                         stm32_gpio_t *scl_gpio, int scl_pin,
+                         uint8_t gpio_af, uint32_t speed,
+                         stkalign_t *work_area, size_t work_area_size);
+#endif
 
 
 #define LSM6DS3_ACC_GYRO_ADDR_A  				0X6A

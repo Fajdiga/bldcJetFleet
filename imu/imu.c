@@ -125,7 +125,13 @@ void imu_init(imu_config *set) {
 		m_imu_type_internal = "BMI160";
 #endif
 
-#ifdef LSM6DS3_SDA_GPIO
+#ifdef LSM6DS3_HW_I2C
+		imu_init_lsm6ds3_hw_i2c(&LSM6DS3_I2C_DEV,
+				LSM6DS3_SDA_GPIO, LSM6DS3_SDA_PIN,
+				LSM6DS3_SCL_GPIO, LSM6DS3_SCL_PIN,
+				LSM6DS3_I2C_AF, LSM6DS3_I2C_SPEED);
+		m_imu_type_internal = "LSM6DS3_HW";
+#elif defined(LSM6DS3_SDA_GPIO)
 		imu_init_lsm6ds3(LSM6DS3_SDA_GPIO, LSM6DS3_SDA_PIN,
 				LSM6DS3_SCL_GPIO, LSM6DS3_SCL_PIN);
 		m_imu_type_internal = "LSM6DS3";
@@ -273,6 +279,18 @@ void imu_init_lsm6ds3(stm32_gpio_t *sda_gpio, int sda_pin,
 	lsm6ds3_set_read_callback(imu_read_callback);
 
 }
+
+#ifdef LSM6DS3_HW_I2C
+void imu_init_lsm6ds3_hw_i2c(I2CDriver *i2c_dev,
+		stm32_gpio_t *sda_gpio, int sda_pin,
+		stm32_gpio_t *scl_gpio, int scl_pin,
+		uint8_t gpio_af, uint32_t speed) {
+
+	lsm6ds3_init_hw_i2c(i2c_dev, sda_gpio, sda_pin, scl_gpio, scl_pin,
+			gpio_af, speed, m_thd_work_area, sizeof(m_thd_work_area));
+	lsm6ds3_set_read_callback(imu_read_callback);
+}
+#endif
 
 void imu_stop(void) {
 	mpu9150_stop();

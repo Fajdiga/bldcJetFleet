@@ -36,6 +36,12 @@ void imu_init_bmi160_i2c(stm32_gpio_t *sda_gpio, int sda_pin,
 		stm32_gpio_t *scl_gpio, int scl_pin);
 void imu_init_lsm6ds3(stm32_gpio_t *sda_gpio, int sda_pin,
 		stm32_gpio_t *scl_gpio, int scl_pin);
+#ifdef LSM6DS3_HW_I2C
+void imu_init_lsm6ds3_hw_i2c(I2CDriver *i2c_dev,
+		stm32_gpio_t *sda_gpio, int sda_pin,
+		stm32_gpio_t *scl_gpio, int scl_pin,
+		uint8_t gpio_af, uint32_t speed);
+#endif
 void imu_init_bmi160_spi(
         stm32_gpio_t *nss_gpio, int nss_pin,
         stm32_gpio_t *sck_gpio, int sck_pin,

@@ -44,70 +44,26 @@ static const I2CConfig i2cfg = {
 		STD_DUTY_CYCLE
 };
 
-#define EXT_BUZZER_ON()    palSetPad(HW_ICU_GPIO, HW_ICU_PIN)
-#define EXT_BUZZER_OFF()   palClearPad(HW_ICU_GPIO, HW_ICU_PIN)
-
-void buzzer_init(void) {
-    // External Buzzer (using servo pin!)
-    palSetPadMode(HW_ICU_GPIO, HW_ICU_PIN,
-                  PAL_MODE_OUTPUT_PUSHPULL |
-                  PAL_STM32_OSPEED_HIGHEST);
-	EXT_BUZZER_ON();
-    chThdSleepMilliseconds(30);
-    EXT_BUZZER_OFF();
-}
-
-static void beep_off(void)
-{
-	EXT_BUZZER_OFF();
-}
-
-static void beep_on(void)
-{
-	EXT_BUZZER_ON();
-}
-
 // Private functions
 static void terminal_button_test(int argc, const char **argv);
 
 void hw_init_gpio(void) {
 
 	chMtxObjectInit(&shutdown_mutex);
-	
+
 	// GPIO clock enable
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
 
-	#ifdef HW_USE_BRK
-	// BRK Fault pin
-	palSetPadMode(BRK_GPIO, BRK_PIN, PAL_MODE_ALTERNATE(GPIO_AF_TIM1));
-	#else	
-	// Soft Lockout
-	palSetPadMode(BRK_GPIO, BRK_PIN, PAL_MODE_INPUT);
-	#endif
-
-	
 	// AUX
 	AUX_OFF();
 	palSetPadMode(AUX_GPIO, AUX_PIN,
 			PAL_MODE_OUTPUT_PUSHPULL |
-			PAL_STM32_OSPEED_HIGHEST);	
-
-	// LEDs
-	palSetPadMode(LED_GREEN_GPIO, LED_GREEN_PIN,
-			PAL_MODE_OUTPUT_PUSHPULL |
-			PAL_STM32_OSPEED_HIGHEST);
-	palSetPadMode(LED_RED_GPIO, LED_RED_PIN,
-			PAL_MODE_OUTPUT_PUSHPULL |
 			PAL_STM32_OSPEED_HIGHEST);
 
-	// On-board Buzzer (using servo pin!)
-	palSetPadMode(HW_ICU_GPIO, HW_ICU_PIN,
-			PAL_MODE_OUTPUT_PUSHPULL |
-			PAL_STM32_OSPEED_HIGHEST);
-	EXT_BUZZER_OFF();
+	// LEDs disabled - ESC is potted
 
 	// GPIOA Configuration: Channel 1 to 3 as alternate function push-pull
 	palSetPadMode(GPIOA, 8, PAL_MODE_ALTERNATE(GPIO_AF_TIM1) |
@@ -153,7 +109,7 @@ void hw_init_gpio(void) {
 	palSetPadMode(GPIOA, 5, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOA, 6, PAL_MODE_INPUT_ANALOG);
 
-	//palSetPadMode(GPIOB, 0, PAL_MODE_INPUT_ANALOG);
+	palSetPadMode(GPIOB, 0, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOB, 1, PAL_MODE_INPUT_ANALOG);
 
 	palSetPadMode(GPIOC, 0, PAL_MODE_INPUT_ANALOG);
@@ -162,6 +118,8 @@ void hw_init_gpio(void) {
 	palSetPadMode(GPIOC, 3, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOC, 4, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOC, 5, PAL_MODE_INPUT_ANALOG);
+
+	// Note: LSM6DS3 I2C pins are configured by the i2c_hw driver
 
 	terminal_register_command_callback(
 			"test_button",
@@ -172,30 +130,30 @@ void hw_init_gpio(void) {
 
 void hw_setup_adc_channels(void) {
 	// ADC1 regular channels
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_10, 1, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_0, 2, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_5, 3, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_14, 4, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_Vrefint, 5, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_8, 6, ADC_SampleTime_15Cycles);
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_10, 1, ADC_SampleTime_15Cycles);   // CURR1
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_0, 2, ADC_SampleTime_15Cycles);    // SENS1
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_5, 3, ADC_SampleTime_15Cycles);    // EXT (PA5)
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_14, 4, ADC_SampleTime_15Cycles);   // TEMP_MOTOR (PC4)
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_8, 5, ADC_SampleTime_15Cycles);    // TEMP_MOS_2 (PB0)
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_0, 6, ADC_SampleTime_15Cycles);    // dummy
 
 	// ADC2 regular channels
-	ADC_RegularChannelConfig(ADC2, ADC_Channel_11, 1, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC2, ADC_Channel_1, 2, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC2, ADC_Channel_6, 3, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC2, ADC_Channel_15, 4, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC2, ADC_Channel_0, 5, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC2, ADC_Channel_9, 6, ADC_SampleTime_15Cycles);
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_11, 1, ADC_SampleTime_15Cycles);   // CURR2
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_1, 2, ADC_SampleTime_15Cycles);    // SENS2
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_6, 3, ADC_SampleTime_15Cycles);    // EXT2 (PA6)
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_15, 4, ADC_SampleTime_15Cycles);   // SHUTDOWN (PC5)
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_9, 5, ADC_SampleTime_15Cycles);    // TEMP_MOS_3 (PB1)
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_0, 6, ADC_SampleTime_15Cycles);    // dummy
 
 	// ADC3 regular channels
-	ADC_RegularChannelConfig(ADC3, ADC_Channel_12, 1, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC3, ADC_Channel_2, 2, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC3, ADC_Channel_3, 3, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC3, ADC_Channel_13, 4, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC3, ADC_Channel_1, 5, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC3, ADC_Channel_2, 6, ADC_SampleTime_15Cycles);
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_12, 1, ADC_SampleTime_15Cycles);   // CURR3
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_2, 2, ADC_SampleTime_15Cycles);    // SENS3
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_3, 3, ADC_SampleTime_15Cycles);    // TEMP_MOS (PA3)
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_13, 4, ADC_SampleTime_15Cycles);   // VIN (PC3)
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_13, 5, ADC_SampleTime_15Cycles);   // VIN (repeated)
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_13, 6, ADC_SampleTime_15Cycles);   // VIN (repeated)
 
-	// Injected channels
+	// Injected channels (unchanged)
 	ADC_InjectedChannelConfig(ADC1, ADC_Channel_10, 1, ADC_SampleTime_15Cycles);
 	ADC_InjectedChannelConfig(ADC2, ADC_Channel_11, 1, ADC_SampleTime_15Cycles);
 	ADC_InjectedChannelConfig(ADC3, ADC_Channel_12, 1, ADC_SampleTime_15Cycles);
@@ -301,7 +259,7 @@ void hw_try_restore_i2c(void) {
 	}
 }
 
-#define RISING_EDGE_THRESHOLD 0.09
+#define RISING_EDGE_THRESHOLD 0.5
 #define TIME_500MS 50
 #define TIME_3S 300
 #define ERPM_THRESHOLD 100
@@ -354,14 +312,12 @@ bool hw_sample_shutdown_button(void) {
         if (!force_poweroff && (fabsf(mc_interface_get_rpm()) > ERPM_THRESHOLD)) {
             will_poweroff = false;
             bt_hold_counter = 0;
-            beep_off();
             return true;
         }
 
         // Now we look for a falling edge to shut down
         if ((bt_diff < -RISING_EDGE_THRESHOLD) || (newval < bt_unpressed + RISING_EDGE_THRESHOLD / 2)) {
             bt_hold_counter++;
-            beep_off();
             return false;
         }
         return true;
@@ -390,15 +346,10 @@ bool hw_sample_shutdown_button(void) {
                     will_poweroff = true;
                     bt_hold_counter = 0;
 
-                    // super short beep to let the user know they can let go of the button now
-                    beep_on();
-                    chThdSleepMilliseconds(20);
-                    beep_off();
                 }
                 else {
                     if (bt_hold_counter  > TIME_3S) {
-                        // Emergency Power-Down - beep to let the user know it's ready
-                        beep_on();
+                        // Emergency Power-Down
                         will_poweroff = true;
                         force_poweroff = true;
                         bt_hold_counter = 0;
@@ -410,23 +361,26 @@ bool hw_sample_shutdown_button(void) {
         else {
             // press is too short, abort
             bt_hold_counter = 0;
-            beep_off();
         }
     }
     return true;
 }
 
 
-float hw_JetFleet_get_temp(void) {
+float hw_JetFleetG18_get_temp(void) {
 	float t1 = (1.0 / ((logf(NTC_RES(ADC_Value[ADC_IND_TEMP_MOS]) / 10000.0) / 3380.0) + (1.0 / 298.15)) - 273.15);
+	float t2 = (1.0 / ((logf(NTC_RES(ADC_Value[ADC_IND_TEMP_MOS_2]) / 10000.0) / 3380.0) + (1.0 / 298.15)) - 273.15);
 	float t3 = (1.0 / ((logf(NTC_RES(ADC_Value[ADC_IND_TEMP_MOS_3]) / 10000.0) / 3380.0) + (1.0 / 298.15)) - 273.15);
 	float res = 0.0;
 
-	if (t1 >= t3) {
+	if (t1 > t2 && t1 > t3) {
 		res = t1;
+	} else if (t2 > t1 && t2 > t3) {
+		res = t2;
 	} else {
 		res = t3;
-	} 
+	}
+
 	return res;
 }
 
