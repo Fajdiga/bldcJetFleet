@@ -139,6 +139,8 @@ float mcpwm_foc_get_ts(void);
 bool mcpwm_foc_is_using_encoder(void);
 void mcpwm_foc_get_observer_state(float *x1, float *x2);
 void mcpwm_foc_set_current_off_delay(float delay_sec);
+int mcpwm_foc_get_pwm_freq_divider(void);
+void mcpwm_foc_set_pwm_freq_divider(int divider);
 
 // Functions where the motor can be selected
 float mcpwm_foc_get_tot_current_motor(bool is_second_motor);

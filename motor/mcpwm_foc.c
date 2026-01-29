@@ -22,6 +22,7 @@
 #endif
 
 #include "mcpwm_foc.h"
+#include "conf_general.h"
 #include "mc_interface.h"
 #include "ch.h"
 #include "hal.h"
@@ -51,6 +52,22 @@ static volatile motor_all_state_t m_motor_2;
 #endif
 static volatile int m_isr_motor = 0;
 
+// Runtime PWM frequency multiplier
+// When > 1, PWM runs at foc_f_zv * multiplier, but FOC loop still runs at foc_f_zv
+// This reduces audible noise and current ripple without increasing CPU load
+#ifndef HW_PWM_FREQ_MULTIPLIER
+#define HW_PWM_FREQ_MULTIPLIER	1
+#endif
+static volatile int m_pwm_freq_divider = HW_PWM_FREQ_MULTIPLIER;
+
+// HFI requires multiplier=1 for correct timing. Track original value to restore later.
+static volatile int m_pwm_freq_divider_hfi_backup = 0;
+static volatile bool m_hfi_multiplier_disabled = false;
+
+// EEPROM address for PWM frequency divider (using custom EEPROM space)
+#define EEPROM_ADDR_PWM_FREQ_DIV	0
+#define PWM_FREQ_DIV_INIT_CODE		0xAB12
+
 // Private functions
 static void control_current(motor_all_state_t *motor, float dt);
 static void update_valpha_vbeta(motor_all_state_t *motor, float mod_alpha, float mod_beta, float voltage_normalize);
@@ -58,6 +75,7 @@ static void stop_pwm_hw(motor_all_state_t *motor);
 static void start_pwm_hw(motor_all_state_t *motor);
 static void full_brake_hw(motor_all_state_t *motor);
 static void terminal_plot_hfi(int argc, const char **argv);
+static void terminal_foc_pwm_freq_mult(int argc, const char **argv);
 static void timer_update(motor_all_state_t *motor, float dt);
 static void hfi_update(volatile motor_all_state_t *motor, float dt);
 
@@ -483,6 +501,36 @@ void mcpwm_foc_init(mc_configuration *conf_m1, mc_configuration *conf_m2) {
 	CURRENT_FILTER_ON_M2();
 	ENABLE_GATE();
 	DCCAL_OFF();
+
+	// Load and apply PWM frequency multiplier from EEPROM before DC calibration.
+	// The multiplier makes PWM run faster (less audible noise) while FOC loop
+	// stays at base rate via skip logic in ISR. Since m_currents_adc only updates
+	// when the skip counter fires, offset calibration naturally samples at FOC rate.
+	{
+		eeprom_var v;
+		if (conf_general_read_eeprom_var_custom(&v, EEPROM_ADDR_PWM_FREQ_DIV)) {
+			uint16_t init_code = (v.as_u32 >> 16) & 0xFFFF;
+			if (init_code == PWM_FREQ_DIV_INIT_CODE) {
+				int div = v.as_u32 & 0xFFFF;
+				if (div >= 1 && div <= 8) {
+					m_pwm_freq_divider = div;
+				}
+			}
+		}
+
+		// Apply multiplier to timer if > 1
+		if (m_pwm_freq_divider > 1) {
+			float foc_freq = m_motor_1.m_conf->foc_f_zv;
+			uint32_t new_top = SYSTEM_CORE_CLOCK / (uint32_t)(foc_freq * m_pwm_freq_divider);
+			TIM1->CR1 |= TIM_CR1_UDIS;
+			TIM8->CR1 |= TIM_CR1_UDIS;
+			TIM1->ARR = new_top;
+			TIM8->ARR = new_top;
+			TIM1->CR1 &= ~TIM_CR1_UDIS;
+			TIM8->CR1 &= ~TIM_CR1_UDIS;
+		}
+	}
+
 #ifdef HW_USE_ALTERNATIVE_DC_CAL
 	m_dccal_done = true;
 #else
@@ -589,6 +637,12 @@ void mcpwm_foc_init(mc_configuration *conf_m1, mc_configuration *conf_m2) {
 			"[en]",
 			terminal_plot_hfi);
 
+	terminal_register_command_callback(
+			"foc_pwm_freq_mult",
+			"Set PWM frequency multiplier (PWM runs faster than FOC loop). 1=off, 4=100kHz PWM/25kHz FOC",
+			"[multiplier|save]",
+			terminal_foc_pwm_freq_mult);
+
 	m_init_done = true;
 }
 
@@ -598,6 +652,10 @@ void mcpwm_foc_deinit(void) {
 	}
 
 	m_init_done = false;
+
+	// Reset HFI multiplier state
+	m_hfi_multiplier_disabled = false;
+	m_pwm_freq_divider_hfi_backup = 0;
 
 	timer_thd_stop = true;
 	while (timer_thd_stop) {
@@ -640,8 +698,8 @@ void mcpwm_foc_set_configuration(mc_configuration *configuration) {
 	foc_precalc_values((motor_all_state_t*)get_motor_now());
 
 	// Below we check if anything in the configuration changed that requires stopping the motor.
-
-	uint32_t top = SYSTEM_CORE_CLOCK / (int)configuration->foc_f_zv;
+	// Account for PWM frequency multiplier when calculating expected timer top value
+	uint32_t top = SYSTEM_CORE_CLOCK / ((int)configuration->foc_f_zv * m_pwm_freq_divider);
 	if (TIM1->ARR != top) {
 #ifdef HW_HAS_DUAL_MOTORS
 		m_motor_1.m_control_mode = CONTROL_MODE_NONE;
@@ -653,6 +711,17 @@ void mcpwm_foc_set_configuration(mc_configuration *configuration) {
 		stop_pwm_hw((motor_all_state_t*)&m_motor_2);
 
 		timer_reinit((int)configuration->foc_f_zv);
+
+		// Reapply PWM frequency multiplier after timer reinit
+		if (m_pwm_freq_divider > 1) {
+			uint32_t new_top = SYSTEM_CORE_CLOCK / ((int)configuration->foc_f_zv * m_pwm_freq_divider);
+			TIM1->CR1 |= TIM_CR1_UDIS;
+			TIM8->CR1 |= TIM_CR1_UDIS;
+			TIM1->ARR = new_top;
+			TIM8->ARR = new_top;
+			TIM1->CR1 &= ~TIM_CR1_UDIS;
+			TIM8->CR1 &= ~TIM_CR1_UDIS;
+		}
 #else
 		get_motor_now()->m_control_mode = CONTROL_MODE_NONE;
 		get_motor_now()->m_state = MC_STATE_OFF;
@@ -1896,6 +1965,23 @@ int mcpwm_foc_measure_inductance(float duty, int samples, float *curr, float *ld
 	volatile motor_all_state_t *motor = get_motor_now();
 	int fault = FAULT_CODE_NONE;
 
+	// Temporarily disable PWM frequency multiplier during inductance measurement.
+	// HFI timing is sensitive and doesn't work correctly with the skip logic.
+	// The multiplier will be restored after measurement.
+	int multiplier_old = m_pwm_freq_divider;
+	if (m_pwm_freq_divider > 1) {
+		// Reset timer to base frequency
+		float foc_freq = motor->m_conf->foc_f_zv;
+		uint32_t base_top = SYSTEM_CORE_CLOCK / (uint32_t)foc_freq;
+		TIM1->CR1 |= TIM_CR1_UDIS;
+		TIM8->CR1 |= TIM_CR1_UDIS;
+		TIM1->ARR = base_top;
+		TIM8->ARR = base_top;
+		TIM1->CR1 &= ~TIM_CR1_UDIS;
+		TIM8->CR1 &= ~TIM_CR1_UDIS;
+		m_pwm_freq_divider = 1;
+	}
+
 	mc_foc_sensor_mode sensor_mode_old = motor->m_conf->foc_sensor_mode;
 	mc_foc_hfi_amb_mode amb_mode_old = motor->m_conf->foc_hfi_amb_mode;
 	float f_zv_old = motor->m_conf->foc_f_zv;
@@ -1977,6 +2063,19 @@ int mcpwm_foc_measure_inductance(float duty, int samples, float *curr, float *ld
 
 			mcpwm_foc_set_configuration(motor->m_conf);
 
+			// Restore PWM frequency multiplier
+			if (multiplier_old > 1) {
+				float foc_freq = motor->m_conf->foc_f_zv;
+				uint32_t new_top = SYSTEM_CORE_CLOCK / (uint32_t)(foc_freq * multiplier_old);
+				TIM1->CR1 |= TIM_CR1_UDIS;
+				TIM8->CR1 |= TIM_CR1_UDIS;
+				TIM1->ARR = new_top;
+				TIM8->ARR = new_top;
+				TIM1->CR1 &= ~TIM_CR1_UDIS;
+				TIM8->CR1 &= ~TIM_CR1_UDIS;
+				m_pwm_freq_divider = multiplier_old;
+			}
+
 			mc_interface_unlock();
 
 			return fault;
@@ -2026,6 +2125,19 @@ int mcpwm_foc_measure_inductance(float duty, int samples, float *curr, float *ld
 	motor->m_conf->foc_current_sample_mode = foc_current_sample_mode_old;
 
 	mcpwm_foc_set_configuration(motor->m_conf);
+
+	// Restore PWM frequency multiplier
+	if (multiplier_old > 1) {
+		float foc_freq = motor->m_conf->foc_f_zv;
+		uint32_t new_top = SYSTEM_CORE_CLOCK / (uint32_t)(foc_freq * multiplier_old);
+		TIM1->CR1 |= TIM_CR1_UDIS;
+		TIM8->CR1 |= TIM_CR1_UDIS;
+		TIM1->ARR = new_top;
+		TIM8->ARR = new_top;
+		TIM1->CR1 &= ~TIM_CR1_UDIS;
+		TIM8->CR1 &= ~TIM_CR1_UDIS;
+		m_pwm_freq_divider = multiplier_old;
+	}
 
 	mc_interface_unlock();
 
@@ -2802,6 +2914,16 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 }
 #endif
 
+int mcpwm_foc_get_pwm_freq_divider(void) {
+	return m_pwm_freq_divider;
+}
+
+void mcpwm_foc_set_pwm_freq_divider(int divider) {
+	if (divider >= 1 && divider <= 8) {
+		m_pwm_freq_divider = divider;
+	}
+}
+
 void mcpwm_foc_print_state(void) {
 	commands_printf("Mod d:     %.2f", (double)get_motor_now()->m_motor_state.mod_d);
 	commands_printf("Mod q:     %.2f", (double)get_motor_now()->m_motor_state.mod_q);
@@ -2973,19 +3095,26 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 
 	FOC_PROFILE_LINE_FINE();
 
-#if FOC_CONTROL_LOOP_FREQ_DIVIDER > 1
-	static int skip = 0;
-	if (++skip == FOC_CONTROL_LOOP_FREQ_DIVIDER) {
-		skip = 0;
-	} else {
-		return;
+	// Runtime PWM frequency multiplier - allows PWM to run faster than FOC control loop
+	// When m_pwm_freq_divider > 1, PWM runs faster but FOC rate stays the same.
+	//
+	// With center-aligned PWM: PWM_freq = SYSCLK / (2 * ARR)
+	// - foc_f_zv = 30kHz gives ARR = SYSCLK/30k, so PWM = 15kHz
+	// - V0 mode: FOC = PWM_freq (samples once per cycle)
+	// - V0_V7 mode: FOC = 2 * PWM_freq (samples twice per cycle)
+	//
+	// With multiplier, ARR is divided, so PWM runs faster. We skip cycles to keep
+	// FOC rate unchanged. This gives higher PWM frequency (less audible noise,
+	// smaller current ripple) while maintaining the same control loop rate.
+	// Since FOC rate is unchanged, dt does NOT need adjustment.
+	if (m_pwm_freq_divider > 1) {
+		static int skip = 0;
+		if (++skip == m_pwm_freq_divider) {
+			skip = 0;
+		} else {
+			return;
+		}
 	}
-
-	// This has to be done for the skip function to have any chance at working with the
-	// observer and control loops.
-	// TODO: Test this.
-	dt *= (float)FOC_CONTROL_LOOP_FREQ_DIVIDER;
-#endif
 
 	// Reset the watchdog
 	timeout_feed_WDT(THREAD_MCPWM);
@@ -4552,6 +4681,35 @@ static void control_current(motor_all_state_t *motor, float dt) {
 
 	motor->m_cc_was_hfi = do_hfi;
 
+	// HFI requires multiplier=1 for correct current sampling timing.
+	// Disable multiplier when HFI is active, restore when observer takes over.
+	if (do_hfi && m_pwm_freq_divider > 1 && !m_hfi_multiplier_disabled) {
+		// HFI starting and multiplier is active - disable it
+		m_pwm_freq_divider_hfi_backup = m_pwm_freq_divider;
+		m_pwm_freq_divider = 1;
+		uint32_t base_top = SYSTEM_CORE_CLOCK / (uint32_t)conf_now->foc_f_zv;
+		TIM1->CR1 |= TIM_CR1_UDIS;
+		TIM8->CR1 |= TIM_CR1_UDIS;
+		TIM1->ARR = base_top;
+		TIM8->ARR = base_top;
+		TIM1->CR1 &= ~TIM_CR1_UDIS;
+		TIM8->CR1 &= ~TIM_CR1_UDIS;
+		m_hfi_multiplier_disabled = true;
+	} else if (!do_hfi && m_hfi_multiplier_disabled) {
+		// HFI stopped and multiplier was disabled - restore it
+		m_pwm_freq_divider = m_pwm_freq_divider_hfi_backup;
+		if (m_pwm_freq_divider > 1) {
+			uint32_t new_top = SYSTEM_CORE_CLOCK / (uint32_t)(conf_now->foc_f_zv * m_pwm_freq_divider);
+			TIM1->CR1 |= TIM_CR1_UDIS;
+			TIM8->CR1 |= TIM_CR1_UDIS;
+			TIM1->ARR = new_top;
+			TIM8->ARR = new_top;
+			TIM1->CR1 &= ~TIM_CR1_UDIS;
+			TIM8->CR1 &= ~TIM_CR1_UDIS;
+		}
+		m_hfi_multiplier_disabled = false;
+	}
+
 	float max_duty = fabsf(state_m->max_duty);
 	utils_truncate_number(&max_duty, 0.0, conf_now->l_max_duty);
 
@@ -5370,5 +5528,66 @@ static void terminal_plot_hfi(int argc, const char **argv) {
 		}
 	} else {
 		commands_printf("This command requires one argument.\n");
+	}
+}
+
+static void terminal_foc_pwm_freq_mult(int argc, const char **argv) {
+	if (argc >= 2) {
+		// Check for save command
+		if (strcmp(argv[1], "save") == 0) {
+			eeprom_var v;
+			v.as_u32 = (PWM_FREQ_DIV_INIT_CODE << 16) | (m_pwm_freq_divider & 0xFFFF);
+			if (conf_general_store_eeprom_var_custom(&v, EEPROM_ADDR_PWM_FREQ_DIV)) {
+				commands_printf("PWM frequency multiplier saved: %d\n", m_pwm_freq_divider);
+			} else {
+				commands_printf("Failed to save setting to EEPROM\n");
+			}
+			return;
+		}
+
+		int mult = -1;
+		sscanf(argv[1], "%d", &mult);
+
+		if (mult >= 1 && mult <= 8) {
+			float foc_freq = get_motor_now()->m_conf->foc_f_zv;
+			float pwm_freq = foc_freq * (float)mult;
+
+			// Update timer period for new PWM frequency
+			uint32_t new_top = SYSTEM_CORE_CLOCK / (uint32_t)pwm_freq;
+
+			utils_sys_lock_cnt();
+			m_pwm_freq_divider = mult;
+			// Reset HFI multiplier state since user is manually setting multiplier
+			m_hfi_multiplier_disabled = false;
+			m_pwm_freq_divider_hfi_backup = 0;
+			TIM1->CR1 |= TIM_CR1_UDIS;
+			TIM8->CR1 |= TIM_CR1_UDIS;
+			TIM1->ARR = new_top;
+			TIM8->ARR = new_top;
+			TIM1->CR1 &= ~TIM_CR1_UDIS;
+			TIM8->CR1 &= ~TIM_CR1_UDIS;
+			utils_sys_unlock_cnt();
+
+			commands_printf("PWM frequency multiplier set to %d", mult);
+			commands_printf("FOC loop frequency: %.0f Hz (unchanged)", (double)foc_freq);
+			commands_printf("PWM frequency: %.0f Hz", (double)pwm_freq);
+			commands_printf("Use 'foc_pwm_freq_mult save' to make persistent\n");
+		} else {
+			commands_printf("Invalid argument. Multiplier must be 1-8.\n");
+		}
+	} else if (argc == 1) {
+		float foc_freq = get_motor_now()->m_conf->foc_f_zv;
+		float pwm_freq = foc_freq * (float)m_pwm_freq_divider;
+		commands_printf("PWM frequency multiplier: %d%s", m_pwm_freq_divider,
+				m_hfi_multiplier_disabled ? " (temporarily disabled for HFI)" : "");
+		if (m_hfi_multiplier_disabled) {
+			commands_printf("Original multiplier: %d (will restore when HFI stops)", m_pwm_freq_divider_hfi_backup);
+		}
+		commands_printf("FOC loop frequency: %.0f Hz", (double)foc_freq);
+		commands_printf("PWM frequency: %.0f Hz\n", (double)pwm_freq);
+	} else {
+		commands_printf("Usage: foc_pwm_freq_mult [multiplier|save]");
+		commands_printf("  multiplier: 1-8 (1=25kHz, 4=100kHz PWM)");
+		commands_printf("  save: save current setting to EEPROM\n");
 	}
 }

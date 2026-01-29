@@ -364,10 +364,11 @@
 #define HW_LIM_VIN				50.0, 190.0		// HW headroom for safety
 #endif
 
-// GaN hardware supports high switching frequencies
-#ifndef HW_LIM_FOC_CTRL_LOOP_FREQ
-#define HW_LIM_FOC_CTRL_LOOP_FREQ	3000.0, 100000.0
-#endif
+// GaN hardware supports high PWM frequencies (up to 100kHz)
+// PWM frequency multiplier - PWM runs at foc_f_zv * multiplier, FOC loop stays at foc_f_zv
+// With 25kHz FOC and multiplier 4, PWM runs at 100kHz (less audible noise, smaller current ripple)
+#define HW_PWM_FREQ_MULTIPLIER	4
+
 
 // ====================================================================================
 // Function Declarations
