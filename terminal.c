@@ -578,6 +578,9 @@ __attribute__((section(".text2"))) void terminal_process_string(char *str) {
 		} else {
 			commands_printf("This command requires five arguments. [current duty erpm_ramp_per_sec resistance inductance]\n");
 		}
+	} else if (strcmp(argv[0], "foc_curr_adc") == 0) {
+		mcpwm_foc_print_curr_adc();
+		commands_printf(" ");
 	} else if (strcmp(argv[0], "foc_state") == 0) {
         commands_printf("FOC State:");
 		mcpwm_foc_print_state();

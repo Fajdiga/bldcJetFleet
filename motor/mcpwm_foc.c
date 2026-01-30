@@ -2749,12 +2749,22 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 	if (cal_undriven) {
 		chThdSleepMilliseconds(10);
 
+		current_sum[0] = 0.0; current_sum[1] = 0.0; current_sum[2] = 0.0;
 		voltage_sum[0] = 0.0; voltage_sum[1] = 0.0; voltage_sum[2] = 0.0;
 #ifdef HW_HAS_DUAL_MOTORS
+		current_sum_m2[0] = 0.0; current_sum_m2[1] = 0.0; current_sum_m2[2] = 0.0;
 		voltage_sum_m2[0] = 0.0; voltage_sum_m2[1] = 0.0; voltage_sum_m2[2] = 0.0;
 #endif
 
 		for (float i = 0;i < samples;i++) {
+			current_sum[0] += m_motor_1.m_currents_adc[0];
+			current_sum[1] += m_motor_1.m_currents_adc[1];
+			current_sum[2] += m_motor_1.m_currents_adc[2];
+#ifdef HW_HAS_DUAL_MOTORS
+			current_sum_m2[0] += m_motor_2.m_currents_adc[0];
+			current_sum_m2[1] += m_motor_2.m_currents_adc[1];
+			current_sum_m2[2] += m_motor_2.m_currents_adc[2];
+#endif
 			v_avg = (ADC_V_L1_VOLTS + ADC_V_L2_VOLTS + ADC_V_L3_VOLTS) / 3.0;
 			voltage_sum[0] += ADC_V_L1_VOLTS - v_avg;
 			voltage_sum[1] += ADC_V_L2_VOLTS - v_avg;
@@ -2767,6 +2777,16 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 #endif
 			chThdSleep(1);
 		}
+
+		// Overwrite current offsets with undriven measurement
+		m_motor_1.m_conf->foc_offsets_current[0] = current_sum[0] / samples;
+		m_motor_1.m_conf->foc_offsets_current[1] = current_sum[1] / samples;
+		m_motor_1.m_conf->foc_offsets_current[2] = current_sum[2] / samples;
+#ifdef HW_HAS_DUAL_MOTORS
+		m_motor_2.m_conf->foc_offsets_current[0] = current_sum_m2[0] / samples;
+		m_motor_2.m_conf->foc_offsets_current[1] = current_sum_m2[1] / samples;
+		m_motor_2.m_conf->foc_offsets_current[2] = current_sum_m2[2] / samples;
+#endif
 
 		stop_pwm_hw((motor_all_state_t*)&m_motor_1);
 
@@ -2918,6 +2938,21 @@ int mcpwm_foc_get_pwm_freq_divider(void) {
 	return m_pwm_freq_divider;
 }
 
+void mcpwm_foc_print_curr_adc(void) {
+	volatile motor_all_state_t *motor = get_motor_now();
+	float adc0 = motor->m_currents_adc[0];
+	float adc1 = motor->m_currents_adc[1];
+	float adc2 = motor->m_currents_adc[2];
+	float ofs0 = motor->m_conf->foc_offsets_current[0];
+	float ofs1 = motor->m_conf->foc_offsets_current[1];
+	float ofs2 = motor->m_conf->foc_offsets_current[2];
+	commands_printf("Raw ADC:    %.2f  %.2f  %.2f",
+		(double)adc0, (double)adc1, (double)adc2);
+	commands_printf("Offset:     %.2f  %.2f  %.2f",
+		(double)ofs0, (double)ofs1, (double)ofs2);
+	commands_printf("Diff:       %.2f  %.2f  %.2f",
+		(double)(adc0 - ofs0), (double)(adc1 - ofs1), (double)(adc2 - ofs2));
+}
 
 void mcpwm_foc_print_state(void) {
 	commands_printf("Mod d:     %.2f", (double)get_motor_now()->m_motor_state.mod_d);
