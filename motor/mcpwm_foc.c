@@ -2918,11 +2918,6 @@ int mcpwm_foc_get_pwm_freq_divider(void) {
 	return m_pwm_freq_divider;
 }
 
-void mcpwm_foc_set_pwm_freq_divider(int divider) {
-	if (divider >= 1 && divider <= 8) {
-		m_pwm_freq_divider = divider;
-	}
-}
 
 void mcpwm_foc_print_state(void) {
 	commands_printf("Mod d:     %.2f", (double)get_motor_now()->m_motor_state.mod_d);
