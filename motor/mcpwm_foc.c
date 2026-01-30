@@ -560,7 +560,7 @@ void mcpwm_foc_init(mc_configuration *conf_m1, mc_configuration *conf_m2) {
 			m_motor_2.m_conf->foc_offsets_current[2] = MCCONF_FOC_OFFSETS_CURRENT_2;
 #endif
 
-			mcpwm_foc_dc_cal(false);
+			mcpwm_foc_dc_cal(true);
 		}
 	} else {
 		m_dccal_done = true;
