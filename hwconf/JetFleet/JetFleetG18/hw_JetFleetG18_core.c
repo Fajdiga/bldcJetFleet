@@ -129,7 +129,7 @@ void hw_init_gpio(void) {
 }
 
 void hw_setup_adc_channels(void) {
-	// ADC1 regular channels
+	// ADC1 regular channels - 2x current oversampling
 	ADC_RegularChannelConfig(ADC1, ADC_Channel_10, 1, ADC_SampleTime_15Cycles);   // CURR1 (sample 1)
 	ADC_RegularChannelConfig(ADC1, ADC_Channel_10, 2, ADC_SampleTime_15Cycles);   // CURR1 (sample 2)
 	ADC_RegularChannelConfig(ADC1, ADC_Channel_0, 3, ADC_SampleTime_15Cycles);    // SENS1

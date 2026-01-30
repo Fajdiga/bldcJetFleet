@@ -367,7 +367,7 @@
 // GaN hardware supports high PWM frequencies (up to 100kHz)
 // PWM frequency multiplier - PWM runs at foc_f_zv * multiplier, FOC loop stays at foc_f_zv
 // With 25kHz FOC and multiplier 4, PWM runs at 100kHz (less audible noise, smaller current ripple)
-#define HW_PWM_FREQ_MULTIPLIER	4
+#define HW_PWM_FREQ_MULTIPLIER	2
 
 
 // ====================================================================================
