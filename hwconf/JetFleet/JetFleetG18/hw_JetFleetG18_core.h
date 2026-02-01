@@ -70,35 +70,31 @@
 // ADC Configuration
 // ====================================================================================
 
-#define HW_ADC_CHANNELS			21
+#define HW_ADC_CHANNELS			18
 #define HW_ADC_INJ_CHANNELS		3
-#define HW_ADC_NBR_CONV			7
+#define HW_ADC_NBR_CONV			6
 
 // ADC Indexes
-// Position 1: Current samples (first)
+// Position 1: Current samples
 #define ADC_IND_CURR1			0
 #define ADC_IND_CURR2			1
 #define ADC_IND_CURR3			2
-// Position 2: Current samples (second - back-to-back oversample)
-#define ADC_IND_CURR1_2			3
-#define ADC_IND_CURR2_2			4
-#define ADC_IND_CURR3_2			5
-// Position 3: Sense voltages
-#define ADC_IND_SENS1			6
-#define ADC_IND_SENS2			7
-#define ADC_IND_SENS3			8
-// Position 4: External inputs
-#define ADC_IND_EXT				9
-#define ADC_IND_EXT2			10
-#define ADC_IND_TEMP_MOS		11
-// Position 5: System voltages
-#define ADC_IND_TEMP_MOTOR		12
-#define ADC_IND_SHUTDOWN		13
-#define ADC_IND_VIN_SENS		14
-// Position 6: Additional temps
-#define ADC_IND_TEMP_MOS_2		15
-#define ADC_IND_TEMP_MOS_3		16
-// Position 7: Unused
+// Position 2: Sense voltages
+#define ADC_IND_SENS1			3
+#define ADC_IND_SENS2			4
+#define ADC_IND_SENS3			5
+// Position 3: External inputs
+#define ADC_IND_EXT				6
+#define ADC_IND_EXT2			7
+#define ADC_IND_TEMP_MOS		8
+// Position 4: System voltages
+#define ADC_IND_TEMP_MOTOR		9
+#define ADC_IND_SHUTDOWN		10
+#define ADC_IND_VIN_SENS		11
+// Position 5: Additional temps
+#define ADC_IND_TEMP_MOS_2		12
+#define ADC_IND_TEMP_MOS_3		13
+// Position 6: Unused
 
 // ====================================================================================
 // Current/Voltage Sensing
@@ -119,9 +115,9 @@
 
 #define GET_INPUT_VOLTAGE()		((V_REG / 4095.0) * (float)ADC_Value[ADC_IND_VIN_SENS] * ((VIN_R1 + VIN_R2) / VIN_R2))
 
-#define GET_CURRENT1()	(((float)ADC_Value[ADC_IND_CURR1] + (float)ADC_Value[ADC_IND_CURR1_2]) / 2.0)
-#define GET_CURRENT2()	(((float)ADC_Value[ADC_IND_CURR2] + (float)ADC_Value[ADC_IND_CURR2_2]) / 2.0)
-#define GET_CURRENT3()	(((float)ADC_Value[ADC_IND_CURR3] + (float)ADC_Value[ADC_IND_CURR3_2]) / 2.0)
+#define GET_CURRENT1()	((float)ADC_Value[ADC_IND_CURR1])
+#define GET_CURRENT2()	((float)ADC_Value[ADC_IND_CURR2])
+#define GET_CURRENT3()	((float)ADC_Value[ADC_IND_CURR3])
 
 // ====================================================================================
 // Temperature Sensing
