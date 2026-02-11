@@ -115,9 +115,6 @@
 
 #define GET_INPUT_VOLTAGE()		((V_REG / 4095.0) * (float)ADC_Value[ADC_IND_VIN_SENS] * ((VIN_R1 + VIN_R2) / VIN_R2))
 
-#define GET_CURRENT1()	((float)ADC_Value[ADC_IND_CURR1])
-#define GET_CURRENT2()	((float)ADC_Value[ADC_IND_CURR2])
-#define GET_CURRENT3()	((float)ADC_Value[ADC_IND_CURR3])
 
 // ====================================================================================
 // Temperature Sensing
@@ -278,7 +275,7 @@
 #define MCCONF_DEFAULT_MOTOR_TYPE		MOTOR_TYPE_FOC
 #endif
 #ifndef MCCONF_FOC_F_ZV
-#define MCCONF_FOC_F_ZV					40000.0
+#define MCCONF_FOC_F_ZV					35000.0
 #endif
 #ifndef MCCONF_FOC_CONTROL_SAMPLE_MODE
 #define MCCONF_FOC_CONTROL_SAMPLE_MODE	FOC_CONTROL_SAMPLE_MODE_V0
