@@ -181,10 +181,10 @@
     #define HW_SPI_PIN_MISO			11
     
     // I2C for IMU
-    #define LSM6DS3_SDA_GPIO		GPIOB
-    #define LSM6DS3_SDA_PIN			4
-    #define LSM6DS3_SCL_GPIO		GPIOB
-    #define LSM6DS3_SCL_PIN			5
+    #define LSM6DSV32X_SDA_GPIO		GPIOB
+    #define LSM6DSV32X_SDA_PIN		4
+    #define LSM6DSV32X_SCL_GPIO		GPIOB
+    #define LSM6DSV32X_SCL_PIN		5
     
     //BRK
     #define BRK_GPIO				GPIOB

@@ -36,6 +36,8 @@ void imu_init_bmi160_i2c(stm32_gpio_t *sda_gpio, int sda_pin,
 		stm32_gpio_t *scl_gpio, int scl_pin);
 void imu_init_lsm6ds3(stm32_gpio_t *sda_gpio, int sda_pin,
 		stm32_gpio_t *scl_gpio, int scl_pin);
+void imu_init_lsm6dsv32x(stm32_gpio_t *sda_gpio, int sda_pin,
+		stm32_gpio_t *scl_gpio, int scl_pin);
 void imu_init_bmi160_spi(
         stm32_gpio_t *nss_gpio, int nss_pin,
         stm32_gpio_t *sck_gpio, int sck_pin,
