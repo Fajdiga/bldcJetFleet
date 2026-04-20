@@ -43,7 +43,7 @@ static const SPIConfig m_spi_cfg = {
 	.ssport = NULL,
 	.sspad = 0,
 	.cr1 = SPI_CR1_BR_1 | SPI_CR1_CPOL | SPI_CR1_CPHA,
-	.cr2 = 0
+
 };
 
 static bool reset_init_lsm6dsv32x(void);

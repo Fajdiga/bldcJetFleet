@@ -260,7 +260,7 @@ void hw_try_restore_i2c(void) {
 	}
 }
 
-#define SHUTDOWN_PRESS_THRESHOLD_V 0.9
+#define SHUTDOWN_PRESS_THRESHOLD_V 0.5
 #define SHUTDOWN_RELEASE_THRESHOLD_V 0.3
 #define TIME_500MS 50
 #define TIME_3S 300
@@ -269,8 +269,8 @@ void hw_try_restore_i2c(void) {
 /**
  * hw_sample_shutdown_button - return false if shutdown is requested, true otherwise.
  *
- * Behavior: level-based sampling tuned for hardware where shutdown signal is close to 0V
- * unpressed and around 1.2V when pressed. A hold above SHUTDOWN_PRESS_THRESHOLD_V starts
+ * Behavior: level-based sampling tuned for hardware where shutdown signal is close to 0.15V
+ * unpressed and around 0.7V when pressed. A hold above SHUTDOWN_PRESS_THRESHOLD_V starts
  * the hold counter. Shutdown happens on release below SHUTDOWN_RELEASE_THRESHOLD_V after
  * a valid hold time.
  *

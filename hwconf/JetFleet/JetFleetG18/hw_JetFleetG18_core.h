@@ -193,8 +193,7 @@
 #define LSM6DSV32X_INT_EXTI_LINE	EXTI_Line12
 #define LSM6DSV32X_INT_EXTI_ISR_VEC	EXTI15_10_IRQHandler
 
-// IMU Orientation
-#define IMU_FLIP				// Chip mounted upside down
+
 
 // ====================================================================================
 // Hall/Encoder
