@@ -24,12 +24,18 @@
 #include "hal.h"
 
 #include "i2c_bb.h"
+#include "spi_bb.h"
 
 void lsm6dsv32x_set_rate_hz(int hz);
 void lsm6dsv32x_set_filter(IMU_FILTER f);
 void lsm6dsv32x_init(i2c_bb_state *i2c_state, stkalign_t *work_area, size_t work_area_size);
+void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin, stkalign_t *work_area, size_t work_area_size);
 void lsm6dsv32x_set_read_callback(void(*func)(float *accel, float *gyro, float *mag));
 void lsm6dsv32x_stop(void);
+
+// SPI read/write masks
+#define LSM6DSV32X_SPI_RD_MASK					0x80
+#define LSM6DSV32X_SPI_WR_MASK					0x7F
 
 
 // I2C addresses (7-bit)

@@ -164,22 +164,34 @@
 #define HW_I2C_SDA_PIN			11
 
 // ====================================================================================
-// I2C for IMU
+// SPI3 for IMU (LSM6DSV32X)
+//   SCK  = PC10 (AF6)
+//   MISO = PC11 (AF6)
+//   MOSI = PC12 (AF6)
+//   NSS  = PA15 (GPIO, manual)
+// Unused I2C2 pins (PB10/PB11) are left floating (high-Z) in hw_init_gpio.
 // ====================================================================================
 
-#define LSM6DS3_SDA_GPIO		GPIOB
-#define LSM6DS3_SDA_PIN			11
-#define LSM6DS3_SCL_GPIO		GPIOB
-#define LSM6DS3_SCL_PIN			10
+#define LSM6DSV32X_SPI_DEV			SPID3
+#define LSM6DSV32X_SPI_AF			GPIO_AF_SPI3
+
+#define LSM6DSV32X_NSS_GPIO			GPIOA
+#define LSM6DSV32X_NSS_PIN			15
+#define LSM6DSV32X_SCK_GPIO			GPIOC
+#define LSM6DSV32X_SCK_PIN			10
+#define LSM6DSV32X_MISO_GPIO		GPIOC
+#define LSM6DSV32X_MISO_PIN			11
+#define LSM6DSV32X_MOSI_GPIO		GPIOC
+#define LSM6DSV32X_MOSI_PIN			12
 
 // IMU Interrupt (Data Ready)
-#define LSM6DS3_INT_GPIO			GPIOB
-#define LSM6DS3_INT_PIN				12
-#define LSM6DS3_INT_EXTI_PORTSRC	EXTI_PortSourceGPIOB
-#define LSM6DS3_INT_EXTI_PINSRC		EXTI_PinSource12
-#define LSM6DS3_INT_EXTI_CH			EXTI15_10_IRQn
-#define LSM6DS3_INT_EXTI_LINE		EXTI_Line12
-#define LSM6DS3_INT_EXTI_ISR_VEC	EXTI15_10_IRQHandler
+#define LSM6DSV32X_INT_GPIO			GPIOB
+#define LSM6DSV32X_INT_PIN			12
+#define LSM6DSV32X_INT_EXTI_PORTSRC	EXTI_PortSourceGPIOB
+#define LSM6DSV32X_INT_EXTI_PINSRC	EXTI_PinSource12
+#define LSM6DSV32X_INT_EXTI_CH		EXTI15_10_IRQn
+#define LSM6DSV32X_INT_EXTI_LINE	EXTI_Line12
+#define LSM6DSV32X_INT_EXTI_ISR_VEC	EXTI15_10_IRQHandler
 
 // IMU Orientation
 #define IMU_FLIP				// Chip mounted upside down
@@ -223,12 +235,14 @@
 // UART Peripheral
 // ====================================================================================
 
-#define HW_UART_DEV				SD4
-#define HW_UART_GPIO_AF			GPIO_AF_UART4
-#define HW_UART_TX_PORT			GPIOC
-#define HW_UART_TX_PIN			10
-#define HW_UART_RX_PORT			GPIOC
-#define HW_UART_RX_PIN			11
+// UART on USART1 (PB6=TX, PB7=RX). PB6 is shared with PPM input (TIM4_CH1);
+// the app switches the pin AF between UART and PPM at runtime.
+#define HW_UART_DEV				SD1
+#define HW_UART_GPIO_AF			GPIO_AF_USART1
+#define HW_UART_TX_PORT			GPIOB
+#define HW_UART_TX_PIN			6
+#define HW_UART_RX_PORT			GPIOB
+#define HW_UART_RX_PIN			7
 
 // ====================================================================================
 // Measurement Macros

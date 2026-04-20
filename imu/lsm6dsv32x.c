@@ -20,6 +20,7 @@
 #include "lsm6dsv32x.h"
 #include "terminal.h"
 #include "i2c_bb.h"
+#include "spi_bb.h"
 #include "commands.h"
 #include "utils_math.h"
 
@@ -28,15 +29,29 @@
 
 static thread_t *lsm6dsv32x_thread_ref = NULL;
 static i2c_bb_state *m_i2c_bb;
+static SPIDriver *m_spi_dev = NULL;
+static stm32_gpio_t *m_nss_gpio;
+static int m_nss_pin;
+static bool m_use_spi = false;
 static volatile uint16_t lsm6dsv32x_addr;
 static int rate_hz = 1000;
 static IMU_FILTER filter;
+
+// SPI mode 3 (CPOL=1, CPHA=1), baud prescaler /8 (~5.25 MHz on SPI3 @ 42 MHz APB1)
+static const SPIConfig m_spi_cfg = {
+	.end_cb = NULL,
+	.ssport = NULL,
+	.sspad = 0,
+	.cr1 = SPI_CR1_BR_1 | SPI_CR1_CPOL | SPI_CR1_CPHA,
+	.cr2 = 0
+};
 
 static bool reset_init_lsm6dsv32x(void);
 static void terminal_read_reg(int argc, const char **argv);
 static void terminal_write_reg(int argc, const char **argv);
 static uint8_t read_single_reg(uint8_t reg);
 static bool write_single_reg(uint8_t reg, uint8_t value);
+static bool read_regs(uint8_t reg, uint8_t *data, int len);
 static THD_FUNCTION(lsm6dsv32x_thread, arg);
 
 // Function pointers
@@ -51,10 +66,51 @@ void lsm6dsv32x_set_filter(IMU_FILTER f) {
 	filter = f;
 }
 
+// Hardware SPI init. Call this from imu_init_lsm6dsv32x_spi which configures pin AFs.
+void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin,
+		stkalign_t *work_area, size_t work_area_size) {
+
+	read_callback = 0;
+	m_use_spi = true;
+	m_spi_dev = spi_dev;
+	m_nss_gpio = nss_gpio;
+	m_nss_pin = nss_pin;
+
+	palSetPad(m_nss_gpio, m_nss_pin);
+	spiStart(m_spi_dev, &m_spi_cfg);
+
+	// Verify WHO_AM_I
+	uint8_t who = read_single_reg(LSM6DSV32X_WHO_AM_I);
+	if (who != LSM6DSV32X_WHO_AM_I_VAL) {
+		commands_printf("LSM6DSV32X SPI WHO_AM_I mismatch: 0x%02X", who);
+		return;
+	}
+
+	if (!reset_init_lsm6dsv32x()) {
+		commands_printf("LSM6DSV32X SPI Init FAILED");
+		return;
+	}
+
+	terminal_register_command_callback(
+			"lsm6dsv32x_read_reg",
+			"Read register of the LSM6DSV32X",
+			"[reg]",
+			terminal_read_reg);
+
+	terminal_register_command_callback(
+			"lsm6dsv32x_write_reg",
+			"Write register of the LSM6DSV32X",
+			"[reg] [value]",
+			terminal_write_reg);
+
+	lsm6dsv32x_thread_ref = chThdCreateStatic(work_area, work_area_size, NORMALPRIO, lsm6dsv32x_thread, NULL);
+}
+
 void lsm6dsv32x_init(i2c_bb_state *i2c_state,
 		stkalign_t *work_area, size_t work_area_size) {
 
 	read_callback = 0;
+	m_use_spi = false;
 	m_i2c_bb = i2c_state;
 
 	// Recover I2C bus in case it is stuck
@@ -226,6 +282,11 @@ void lsm6dsv32x_stop(void) {
 		chThdTerminate(lsm6dsv32x_thread_ref);
 		chThdWait(lsm6dsv32x_thread_ref);
 	}
+	if (m_use_spi && m_spi_dev != NULL) {
+		spiStop(m_spi_dev);
+		m_spi_dev = NULL;
+		m_use_spi = false;
+	}
 	lsm6dsv32x_thread_ref = NULL;
 	terminal_unregister_callback(terminal_read_reg);
 	terminal_unregister_callback(terminal_write_reg);
@@ -235,27 +296,40 @@ void lsm6dsv32x_set_read_callback(void(*func)(float *accel, float *gyro, float *
 	read_callback = func;
 }
 
+static bool read_regs(uint8_t reg, uint8_t *data, int len) {
+	if (m_use_spi) {
+		palClearPad(m_nss_gpio, m_nss_pin);
+		spiPolledExchange(m_spi_dev, reg | LSM6DSV32X_SPI_RD_MASK);
+		for (int i = 0; i < len; i++) {
+			data[i] = spiPolledExchange(m_spi_dev, 0);
+		}
+		palSetPad(m_nss_gpio, m_nss_pin);
+		return true;
+	}
+
+	uint8_t txb[1] = { reg };
+	return i2c_bb_tx_rx(m_i2c_bb, lsm6dsv32x_addr, txb, 1, data, len);
+}
+
 static bool write_single_reg(uint8_t reg, uint8_t value) {
-	uint8_t txb[2];
+	if (m_use_spi) {
+		palClearPad(m_nss_gpio, m_nss_pin);
+		spiPolledExchange(m_spi_dev, reg & LSM6DSV32X_SPI_WR_MASK);
+		spiPolledExchange(m_spi_dev, value);
+		palSetPad(m_nss_gpio, m_nss_pin);
+		return true;
+	}
 
-	txb[0] = reg;
-	txb[1] = value;
-
+	uint8_t txb[2] = { reg, value };
 	return i2c_bb_tx_rx(m_i2c_bb, lsm6dsv32x_addr, txb, 2, 0, 0);
 }
 
 static uint8_t read_single_reg(uint8_t reg) {
-	uint8_t txb[1];
-	uint8_t rxb[1];
-
-	txb[0] = reg;
-	bool res = i2c_bb_tx_rx(m_i2c_bb, lsm6dsv32x_addr, txb, 1, rxb, 1);
-
-	if (res) {
+	uint8_t rxb[1] = { 0 };
+	if (read_regs(reg, rxb, 1)) {
 		return rxb[0];
-	} else {
-		return 0;
 	}
+	return 0;
 }
 
 static void terminal_read_reg(int argc, const char **argv) {
@@ -310,16 +384,15 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 	const systime_t desired_interval = US2ST(1000000 / rate_hz);
 
 	while (!chThdShouldTerminateX()) {
-		uint8_t txb[1];
 		uint8_t rxb[12];
 
 		// Read gyro and accel output registers (12 bytes starting at OUTX_L_G)
-		txb[0] = LSM6DSV32X_OUTX_L_G;
-		bool res = i2c_bb_tx_rx(m_i2c_bb, lsm6dsv32x_addr, txb, 1, rxb, 12);
+		bool res = read_regs(LSM6DSV32X_OUTX_L_G, rxb, 12);
 
 		if (!res) {
-			// Re-initialize on I2C failure
-			i2c_bb_restore_bus(m_i2c_bb);
+			if (!m_use_spi) {
+				i2c_bb_restore_bus(m_i2c_bb);
+			}
 			reset_init_lsm6dsv32x();
 			chThdSleepMilliseconds(10);
 			iteration_timer = chVTGetSystemTimeX();

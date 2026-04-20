@@ -117,7 +117,10 @@ void hw_init_gpio(void) {
 	palSetPadMode(GPIOC, 4, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOC, 5, PAL_MODE_INPUT_ANALOG);
 
-	// Note: LSM6DS3 I2C pins are configured by the i2c_hw driver
+	// I2C2 pins (PB10/PB11) are unused on G18 (IMU is on SPI3). Leave them floating
+	// high-Z so they do not interfere with the LSM6DSV32X on SPI3.
+	palSetPadMode(GPIOB, 10, PAL_MODE_INPUT);
+	palSetPadMode(GPIOB, 11, PAL_MODE_INPUT);
 
 	terminal_register_command_callback(
 			"test_button",
