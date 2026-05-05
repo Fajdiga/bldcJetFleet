@@ -188,7 +188,7 @@ typedef enum {
 /************** CTRL7 (0x16) - Gyro filter settings *******************/
 #define LSM6DSV32X_G_LPF1_EN				 0x01
 
-/************** CTRL8 (0x17) - Accel full-scale and filter settings *******************/
+/************** CTRL8 (0x17) - Accel full-scale and filter bandwidth *******************/
 // Bit 2 must be set to 1 for correct operation of LSM6DSV32X
 #define LSM6DSV32X_XL_FS_MODE				 0x04
 
@@ -199,9 +199,6 @@ typedef enum {
 	LSM6DSV32X_FS_XL_16g				 = 0x02,
 	LSM6DSV32X_FS_XL_32g				 = 0x03,
 } LSM6DSV32X_FS_XL_t;
-
-// Accel LPF2 and HP filter settings
-#define LSM6DSV32X_XL_LPF2_EN				 0x10
 
 // Accel HP / LPF2 bandwidth bits [7:5]
 typedef enum {
@@ -214,6 +211,9 @@ typedef enum {
 	LSM6DSV32X_XL_HP_BW_ODR_400		 = 0xC0,
 	LSM6DSV32X_XL_HP_BW_ODR_800		 = 0xE0,
 } LSM6DSV32X_XL_HP_BW_t;
+
+/************** CTRL9 (0x18) - Accel filter enables *******************/
+#define LSM6DSV32X_XL_LPF2_EN				 0x08
 
 /************** STATUS_REG (0x1E) bits *******************/
 #define LSM6DSV32X_STATUS_XLDA				 0x01

@@ -188,9 +188,19 @@ static bool reset_init_lsm6dsv32x(void) {
 	// Bit 2 (XL_FS_MODE) must be set to 1 for correct operation of LSM6DSV32X
 	uint8_t ctrl8_val = LSM6DSV32X_XL_FS_MODE | LSM6DSV32X_FS_XL_32g;
 	if (filter == IMU_FILTER_HIGH) {
-		ctrl8_val |= LSM6DSV32X_XL_LPF2_EN | LSM6DSV32X_XL_HP_BW_ODR_4;
+		ctrl8_val |= LSM6DSV32X_XL_HP_BW_ODR_4;
 	}
 	if (!write_single_reg(LSM6DSV32X_CTRL8, ctrl8_val)) {
+		return false;
+	}
+
+	// Enable accel LPF2 only in high filter mode. The enable bit is in CTRL9;
+	// CTRL8 only selects the cutoff ratio.
+	uint8_t ctrl9_val = 0;
+	if (filter == IMU_FILTER_HIGH) {
+		ctrl9_val |= LSM6DSV32X_XL_LPF2_EN;
+	}
+	if (!write_single_reg(LSM6DSV32X_CTRL9, ctrl9_val)) {
 		return false;
 	}
 
@@ -204,13 +214,16 @@ static bool reset_init_lsm6dsv32x(void) {
 	}
 
 	// Enable gyro LPF1 if filter is medium or higher (CTRL7)
+	uint8_t ctrl7_val = 0;
 	if (filter >= IMU_FILTER_MEDIUM) {
-		if (!write_single_reg(LSM6DSV32X_CTRL7, LSM6DSV32X_G_LPF1_EN)) {
-			return false;
-		}
+		ctrl7_val |= LSM6DSV32X_G_LPF1_EN;
+	}
+	if (!write_single_reg(LSM6DSV32X_CTRL7, ctrl7_val)) {
+		return false;
 	}
 
-	// Determine accel ODR, bumping up for oversampling with higher filter
+	// Determine accel ODR from the requested sample rate. Filter settings must
+	// not change ODR, otherwise DRDY/callback frequency changes unexpectedly.
 	uint8_t odr_xl = LSM6DSV32X_ODR_XL_960Hz;
 	if (rate_hz <= 8) {
 		odr_xl = LSM6DSV32X_ODR_XL_7_5Hz;
@@ -225,23 +238,11 @@ static bool reset_init_lsm6dsv32x(void) {
 	} else if (rate_hz <= 240) {
 		odr_xl = LSM6DSV32X_ODR_XL_240Hz;
 	} else if (rate_hz <= 480) {
-		if (filter >= IMU_FILTER_MEDIUM) {
-			odr_xl = LSM6DSV32X_ODR_XL_960Hz;
-		} else {
-			odr_xl = LSM6DSV32X_ODR_XL_480Hz;
-		}
+		odr_xl = LSM6DSV32X_ODR_XL_480Hz;
 	} else if (rate_hz <= 960) {
-		if (filter >= IMU_FILTER_MEDIUM) {
-			odr_xl = LSM6DSV32X_ODR_XL_1920Hz;
-		} else {
-			odr_xl = LSM6DSV32X_ODR_XL_960Hz;
-		}
+		odr_xl = LSM6DSV32X_ODR_XL_960Hz;
 	} else if (rate_hz <= 1920) {
-		if (filter >= IMU_FILTER_MEDIUM) {
-			odr_xl = LSM6DSV32X_ODR_XL_3840Hz;
-		} else {
-			odr_xl = LSM6DSV32X_ODR_XL_1920Hz;
-		}
+		odr_xl = LSM6DSV32X_ODR_XL_1920Hz;
 	} else if (rate_hz <= 3840) {
 		odr_xl = LSM6DSV32X_ODR_XL_3840Hz;
 	} else {
@@ -251,7 +252,8 @@ static bool reset_init_lsm6dsv32x(void) {
 		return false;
 	}
 
-	// Determine gyro ODR, bumping up for oversampling with higher filter
+	// Determine gyro ODR from the requested sample rate. INT1 is routed from
+	// gyro DRDY, so this directly controls the interrupt frequency.
 	uint8_t odr_g = LSM6DSV32X_ODR_G_960Hz;
 	if (rate_hz <= 8) {
 		odr_g = LSM6DSV32X_ODR_G_7_5Hz;
@@ -266,23 +268,11 @@ static bool reset_init_lsm6dsv32x(void) {
 	} else if (rate_hz <= 240) {
 		odr_g = LSM6DSV32X_ODR_G_240Hz;
 	} else if (rate_hz <= 480) {
-		if (filter >= IMU_FILTER_MEDIUM) {
-			odr_g = LSM6DSV32X_ODR_G_960Hz;
-		} else {
-			odr_g = LSM6DSV32X_ODR_G_480Hz;
-		}
+		odr_g = LSM6DSV32X_ODR_G_480Hz;
 	} else if (rate_hz <= 960) {
-		if (filter >= IMU_FILTER_MEDIUM) {
-			odr_g = LSM6DSV32X_ODR_G_1920Hz;
-		} else {
-			odr_g = LSM6DSV32X_ODR_G_960Hz;
-		}
+		odr_g = LSM6DSV32X_ODR_G_960Hz;
 	} else if (rate_hz <= 1920) {
-		if (filter >= IMU_FILTER_MEDIUM) {
-			odr_g = LSM6DSV32X_ODR_G_3840Hz;
-		} else {
-			odr_g = LSM6DSV32X_ODR_G_1920Hz;
-		}
+		odr_g = LSM6DSV32X_ODR_G_1920Hz;
 	} else if (rate_hz <= 3840) {
 		odr_g = LSM6DSV32X_ODR_G_3840Hz;
 	} else {
