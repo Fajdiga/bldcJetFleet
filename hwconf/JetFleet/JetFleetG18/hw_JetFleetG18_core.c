@@ -122,6 +122,20 @@ void hw_init_gpio(void) {
 	palSetPadMode(GPIOB, 10, PAL_MODE_INPUT);
 	palSetPadMode(GPIOB, 11, PAL_MODE_INPUT);
 
+	// LSM6DSV32X INT1 (data-ready) on PD2 — rising-edge EXTI
+	palSetPadMode(LSM6DSV32X_INT_GPIO, LSM6DSV32X_INT_PIN, PAL_MODE_INPUT_PULLDOWN);
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_SYSCFG, ENABLE);
+	SYSCFG_EXTILineConfig(LSM6DSV32X_INT_EXTI_PORTSRC, LSM6DSV32X_INT_EXTI_PINSRC);
+	{
+		EXTI_InitTypeDef EXTI_InitStructure;
+		EXTI_InitStructure.EXTI_Line = LSM6DSV32X_INT_EXTI_LINE;
+		EXTI_InitStructure.EXTI_Mode = EXTI_Mode_Interrupt;
+		EXTI_InitStructure.EXTI_Trigger = EXTI_Trigger_Rising;
+		EXTI_InitStructure.EXTI_LineCmd = ENABLE;
+		EXTI_Init(&EXTI_InitStructure);
+	}
+	nvicEnableVector(LSM6DSV32X_INT_EXTI_CH, 6);
+
 	terminal_register_command_callback(
 			"test_button",
 			"Try sampling the shutdown button",

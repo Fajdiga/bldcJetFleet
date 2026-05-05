@@ -26,6 +26,9 @@
 #include "hw.h"
 #include "encoder/encoder.h"
 #include "main.h"
+#ifdef LSM6DSV32X_INT_EXTI_ISR_VEC
+#include "lsm6dsv32x.h"
+#endif
 
 CH_IRQ_HANDLER(ADC1_2_3_IRQHandler) {
 	CH_IRQ_PROLOGUE();
@@ -42,6 +45,17 @@ CH_IRQ_HANDLER(HW_ENC_EXTI_ISR_VEC) {
 		EXTI_ClearITPendingBit(HW_ENC_EXTI_LINE);
 	}
 }
+
+#ifdef LSM6DSV32X_INT_EXTI_ISR_VEC
+CH_IRQ_HANDLER(LSM6DSV32X_INT_EXTI_ISR_VEC) {
+	CH_IRQ_PROLOGUE();
+	if (EXTI_GetITStatus(LSM6DSV32X_INT_EXTI_LINE) != RESET) {
+		lsm6dsv32x_int1_isr();
+		EXTI_ClearITPendingBit(LSM6DSV32X_INT_EXTI_LINE);
+	}
+	CH_IRQ_EPILOGUE();
+}
+#endif
 
 CH_IRQ_HANDLER(HW_ENC_TIM_ISR_VEC) {
 	if (TIM_GetITStatus(HW_ENC_TIM, TIM_IT_Update) != RESET) {

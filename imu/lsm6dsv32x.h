@@ -32,6 +32,7 @@ void lsm6dsv32x_init(i2c_bb_state *i2c_state, stkalign_t *work_area, size_t work
 void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin, stkalign_t *work_area, size_t work_area_size);
 void lsm6dsv32x_set_read_callback(void(*func)(float *accel, float *gyro, float *mag));
 void lsm6dsv32x_stop(void);
+void lsm6dsv32x_int1_isr(void);
 
 // SPI read/write masks
 #define LSM6DSV32X_SPI_RD_MASK					0x80
@@ -97,6 +98,10 @@ void lsm6dsv32x_stop(void);
 
 // WHO_AM_I expected value
 #define LSM6DSV32X_WHO_AM_I_VAL					0x70
+
+/************** INT1_CTRL (0x0D) - INT1 pin control *******************/
+#define LSM6DSV32X_INT1_DRDY_XL				 0x01
+#define LSM6DSV32X_INT1_DRDY_G				 0x02
 
 /************** CTRL1 (0x10) - Accelerometer ODR and mode *******************/
 // ODR bits [3:0]

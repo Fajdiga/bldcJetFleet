@@ -28,6 +28,9 @@
 
 
 static thread_t *lsm6dsv32x_thread_ref = NULL;
+static binary_semaphore_t m_drdy_sem;
+static bool m_drdy_sem_init = false;
+static bool m_use_int1 = false;
 static i2c_bb_state *m_i2c_bb;
 static SPIDriver *m_spi_dev = NULL;
 static stm32_gpio_t *m_nss_gpio;
@@ -67,14 +70,28 @@ void lsm6dsv32x_set_filter(IMU_FILTER f) {
 }
 
 // Hardware SPI init. Call this from imu_init_lsm6dsv32x_spi which configures pin AFs.
+void lsm6dsv32x_int1_isr(void) {
+	if (m_drdy_sem_init) {
+		chSysLockFromISR();
+		chBSemSignalI(&m_drdy_sem);
+		chSysUnlockFromISR();
+	}
+}
+
 void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin,
 		stkalign_t *work_area, size_t work_area_size) {
 
 	read_callback = 0;
 	m_use_spi = true;
+	m_use_int1 = true;
 	m_spi_dev = spi_dev;
 	m_nss_gpio = nss_gpio;
 	m_nss_pin = nss_pin;
+
+	if (!m_drdy_sem_init) {
+		chBSemObjectInit(&m_drdy_sem, true);
+		m_drdy_sem_init = true;
+	}
 
 	palSetPad(m_nss_gpio, m_nss_pin);
 	spiStart(m_spi_dev, &m_spi_cfg);
@@ -111,6 +128,7 @@ void lsm6dsv32x_init(i2c_bb_state *i2c_state,
 
 	read_callback = 0;
 	m_use_spi = false;
+	m_use_int1 = false;
 	m_i2c_bb = i2c_state;
 
 	// Recover I2C bus in case it is stuck
@@ -274,6 +292,13 @@ static bool reset_init_lsm6dsv32x(void) {
 		return false;
 	}
 
+	// Route gyro data-ready to INT1 when interrupt-driven mode is in use
+	if (m_use_int1) {
+		if (!write_single_reg(LSM6DSV32X_INT1_CTRL, LSM6DSV32X_INT1_DRDY_G)) {
+			return false;
+		}
+	}
+
 	return true;
 }
 
@@ -382,9 +407,16 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 
 	systime_t iteration_timer = chVTGetSystemTimeX();
 	const systime_t desired_interval = US2ST(1000000 / rate_hz);
+	// Watchdog timeout for INT1 wait: 4x the expected sample period, min 5ms
+	const systime_t int1_timeout = MS2ST(5) > (desired_interval * 4) ? MS2ST(5) : (desired_interval * 4);
 
 	while (!chThdShouldTerminateX()) {
 		uint8_t rxb[12];
+
+		if (m_use_int1) {
+			// Block until DRDY EXTI fires (or timeout to recover from missed pulses)
+			chBSemWaitTimeout(&m_drdy_sem, int1_timeout);
+		}
 
 		// Read gyro and accel output registers (12 bytes starting at OUTX_L_G)
 		bool res = read_regs(LSM6DSV32X_OUTX_L_G, rxb, 12);
@@ -416,7 +448,11 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 			read_callback(tmp_accel, tmp_gyro, tmp_mag);
 		}
 
-		// Delay between loops
+		if (m_use_int1) {
+			continue;
+		}
+
+		// Polling-mode delay between loops
 		iteration_timer += desired_interval;
 		systime_t current_time = chVTGetSystemTimeX();
 		systime_t remaining_sleep_time = iteration_timer - current_time;
