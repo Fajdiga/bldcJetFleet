@@ -27,6 +27,7 @@
 #include "icm20948.h"
 #include "bmi160_wrapper.h"
 #include "lsm6ds3.h"
+#include "lsm6dsv32x.h"
 #include "utils_math.h"
 #include "Fusion.h"
 #include "digital_filter.h"
@@ -102,9 +103,11 @@ void imu_init(imu_config *set) {
 	m_icm20948_state.rate_hz = MIN(set->sample_rate_hz, 1000);
 	m_bmi_state.rate_hz = set->sample_rate_hz;
 	lsm6ds3_set_rate_hz(set->sample_rate_hz);
+	lsm6dsv32x_set_rate_hz(set->sample_rate_hz);
 
 	m_bmi_state.filter = set->filter;
 	lsm6ds3_set_filter(set->filter);
+	lsm6dsv32x_set_filter(set->filter);
 
 	if (set->type == IMU_TYPE_INTERNAL) {
 #ifdef MPU9X50_SDA_GPIO
@@ -152,6 +155,21 @@ void imu_init(imu_config *set) {
 #endif
 #endif
 
+#ifdef LSM6DSV32X_SDA_GPIO
+		imu_init_lsm6dsv32x(LSM6DSV32X_SDA_GPIO, LSM6DSV32X_SDA_PIN,
+				LSM6DSV32X_SCL_GPIO, LSM6DSV32X_SCL_PIN);
+		m_imu_type_internal = "LSM6DSV32X";
+#endif
+
+#ifdef LSM6DSV32X_SPI_DEV
+		imu_init_lsm6dsv32x_spi(&LSM6DSV32X_SPI_DEV, LSM6DSV32X_SPI_AF,
+				LSM6DSV32X_NSS_GPIO, LSM6DSV32X_NSS_PIN,
+				LSM6DSV32X_SCK_GPIO, LSM6DSV32X_SCK_PIN,
+				LSM6DSV32X_MOSI_GPIO, LSM6DSV32X_MOSI_PIN,
+				LSM6DSV32X_MISO_GPIO, LSM6DSV32X_MISO_PIN);
+		m_imu_type_internal = "LSM6DSV32X_SPI";
+#endif
+
 #ifdef BMI160_SPI_PORT_NSS
 		imu_init_bmi160_spi(
 				BMI160_SPI_PORT_NSS, BMI160_SPI_PIN_NSS,
@@ -174,6 +192,9 @@ void imu_init(imu_config *set) {
 				HW_I2C_SCL_PORT, HW_I2C_SCL_PIN);
 	} else if (set->type == IMU_TYPE_EXTERNAL_BMI160) {
 		imu_init_bmi160_i2c(HW_I2C_SDA_PORT, HW_I2C_SDA_PIN,
+				HW_I2C_SCL_PORT, HW_I2C_SCL_PIN);
+	} else if (set->type == IMU_TYPE_EXTERNAL_LSM6DSV32X) {
+		imu_init_lsm6dsv32x(HW_I2C_SDA_PORT, HW_I2C_SDA_PIN,
 				HW_I2C_SCL_PORT, HW_I2C_SCL_PIN);
 	}
 
@@ -310,11 +331,49 @@ void imu_init_lsm6ds3_spi(stm32_gpio_t *nss_gpio, int nss_pin,
 	lsm6ds3_set_read_callback(imu_read_callback);
 }
 
+void imu_init_lsm6dsv32x(stm32_gpio_t *sda_gpio, int sda_pin,
+		stm32_gpio_t *scl_gpio, int scl_pin) {
+	imu_stop();
+
+	m_i2c_bb.sda_gpio = sda_gpio;
+	m_i2c_bb.sda_pin = sda_pin;
+	m_i2c_bb.scl_gpio = scl_gpio;
+	m_i2c_bb.scl_pin = scl_pin;
+	m_i2c_bb.rate = I2C_BB_RATE_400K;
+	i2c_bb_init(&m_i2c_bb);
+
+	lsm6dsv32x_init(&m_i2c_bb, m_thd_work_area, sizeof(m_thd_work_area));
+	lsm6dsv32x_set_read_callback(imu_read_callback);
+}
+
+void imu_init_lsm6dsv32x_spi(SPIDriver *spi_dev, int spi_af,
+		stm32_gpio_t *nss_gpio, int nss_pin,
+		stm32_gpio_t *sck_gpio, int sck_pin,
+		stm32_gpio_t *mosi_gpio, int mosi_pin,
+		stm32_gpio_t *miso_gpio, int miso_pin) {
+	imu_stop();
+
+	palSetPadMode(nss_gpio, nss_pin,
+			PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_HIGHEST);
+	palSetPad(nss_gpio, nss_pin);
+	palSetPadMode(sck_gpio, sck_pin,
+			PAL_MODE_ALTERNATE(spi_af) | PAL_STM32_OSPEED_HIGHEST);
+	palSetPadMode(mosi_gpio, mosi_pin,
+			PAL_MODE_ALTERNATE(spi_af) | PAL_STM32_OSPEED_HIGHEST);
+	palSetPadMode(miso_gpio, miso_pin,
+			PAL_MODE_ALTERNATE(spi_af) | PAL_STM32_OSPEED_HIGHEST);
+
+	lsm6dsv32x_init_spi(spi_dev, nss_gpio, nss_pin,
+			m_thd_work_area, sizeof(m_thd_work_area));
+	lsm6dsv32x_set_read_callback(imu_read_callback);
+}
+
 void imu_stop(void) {
 	mpu9150_stop();
 	icm20948_stop(&m_icm20948_state);
 	bmi160_wrapper_stop(&m_bmi_state);
 	lsm6ds3_stop();
+	lsm6dsv32x_stop();
 }
 
 bool imu_startup_done(void) {

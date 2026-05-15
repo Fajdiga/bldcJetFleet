@@ -567,9 +567,13 @@
 #define HW_LIM_CURRENT_ABS		0.0, 140.0
 #endif
 
-// Limit sample rate for the LSM6DS3 IMU due to the current polling mechanism
-// causing rare unexplained MCU resets when the rate is too high
-#if defined(LSM6DS3_USE_SPI)
+// Limit IMU sample rates to hardware/driver combinations that are tested and
+// keep the configured filtering chain in the intended bandwidth range.
+#if defined(LSM6DSV32X_SPI_DEV)
+#define HW_LIM_IMU_SAMPLE_RATE_HZ	3840
+#elif defined(LSM6DSV32X_SDA_GPIO)
+#define HW_LIM_IMU_SAMPLE_RATE_HZ	900
+#elif defined(LSM6DS3_USE_SPI)
 #define HW_LIM_IMU_SAMPLE_RATE_HZ 2400
 #elif defined(LSM6DS3_SPEED_700KHZ)
 #define HW_LIM_IMU_SAMPLE_RATE_HZ	1200
