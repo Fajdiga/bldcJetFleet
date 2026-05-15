@@ -25,6 +25,7 @@
 #include "utils_math.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #define LSM6DSV32X_BURST_READ_LEN	13
 
@@ -45,8 +46,32 @@ static uint8_t m_stream_rxb[LSM6DSV32X_BURST_READ_LEN];
 static volatile bool m_spi_stream_enabled = false;
 static volatile bool m_spi_stream_active = false;
 static volatile bool m_spi_stream_complete = false;
+static volatile bool m_spi_stream_pending = false;
 static volatile bool m_spi_sync_active = false;
 static volatile uint32_t m_spi_stream_overruns = 0;
+static volatile uint32_t m_stat_drdy = 0;
+static volatile uint32_t m_stat_drdy_ignored_disabled = 0;
+static volatile uint32_t m_stat_drdy_ignored_active = 0;
+static volatile uint32_t m_stat_drdy_ignored_complete = 0;
+static volatile uint32_t m_stat_pending_restarted = 0;
+static volatile uint32_t m_stat_pending_restart_failed = 0;
+static volatile uint32_t m_stat_drdy_ignored_sync = 0;
+static volatile uint32_t m_stat_drdy_ignored_not_ready = 0;
+static volatile uint32_t m_stat_stream_started = 0;
+static volatile uint32_t m_stat_stream_completed = 0;
+static volatile uint32_t m_stat_stream_copied = 0;
+static volatile uint32_t m_stat_copy_failed = 0;
+static volatile uint32_t m_stat_wait_timeout = 0;
+static volatile uint32_t m_stat_recover = 0;
+static volatile uint32_t m_stat_reset_ok = 0;
+static volatile uint32_t m_stat_reset_fail = 0;
+static volatile uint32_t m_stat_sync_transfer_failed = 0;
+static volatile uint32_t m_stat_samples = 0;
+static volatile uint32_t m_stat_last_sample_time = 0;
+static volatile uint32_t m_stat_min_sample_dt = 0xFFFFFFFF;
+static volatile uint32_t m_stat_max_sample_dt = 0;
+static volatile int16_t m_stat_last_raw[6];
+static volatile int16_t m_stat_max_raw_delta[6];
 
 // Default rate. Can be changed before init with lsm6dsv32x_set_rate_hz().
 static int rate_hz = 1000;
@@ -60,6 +85,7 @@ static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len);
 static void prepare_stream_read(void);
 static bool copy_stream_read(uint8_t *data, int len);
 static void recover_spi_stream(void);
+static bool start_stream_read(bool from_isr);
 
 // SPI mode 3: CPOL = 1, CPHA = 1.
 // Prescaler /8 gives ~5.25 MHz on SPI3 @ 42 MHz APB1.
@@ -74,6 +100,8 @@ static const SPIConfig m_spi_cfg = {
 static bool reset_init_lsm6dsv32x(void);
 static void terminal_read_reg(int argc, const char **argv);
 static void terminal_write_reg(int argc, const char **argv);
+static void terminal_stats(int argc, const char **argv);
+static void reset_stats(void);
 static uint8_t read_single_reg(uint8_t reg);
 static bool write_single_reg(uint8_t reg, uint8_t value);
 static bool write_config_reg(uint8_t reg, uint8_t value, const char *name);
@@ -100,28 +128,44 @@ void lsm6dsv32x_set_filter(IMU_FILTER f) {
 
 void lsm6dsv32x_int1_isr(void) {
 	if (m_use_spi) {
+		m_stat_drdy++;
+
 		if (!m_spi_stream_enabled || m_spi_dev == NULL || m_nss_gpio == NULL) {
+			m_stat_drdy_ignored_disabled++;
 			return;
 		}
 
-		if (m_spi_stream_active || m_spi_stream_complete ||
-				m_spi_sync_active || m_spi_dev->state != SPI_READY) {
+		bool busy_active = m_spi_stream_active;
+		bool busy_complete = m_spi_stream_complete;
+		bool busy_sync = m_spi_sync_active;
+		bool busy_not_ready = m_spi_dev->state != SPI_READY;
+
+		if (busy_active || busy_complete || busy_sync || busy_not_ready) {
 			m_spi_stream_overruns++;
+
+			if (busy_active) {
+				m_stat_drdy_ignored_active++;
+				m_spi_stream_pending = true;
+			}
+
+			if (busy_complete) {
+				m_stat_drdy_ignored_complete++;
+				m_spi_stream_pending = true;
+			}
+
+			if (busy_sync) {
+				m_stat_drdy_ignored_sync++;
+			}
+
+			if (busy_not_ready) {
+				m_stat_drdy_ignored_not_ready++;
+				m_spi_stream_pending = true;
+			}
+
 			return;
 		}
 
-		m_spi_stream_complete = false;
-		m_spi_stream_active = true;
-
-		// Same DMA/RXNE guard used by the async encoder SPI drivers.
-		volatile uint32_t rxne_clear = m_spi_dev->spi->DR;
-		(void)rxne_clear;
-
-		palClearPad(m_nss_gpio, m_nss_pin);
-
-		chSysLockFromISR();
-		spiStartExchangeI(m_spi_dev, LSM6DSV32X_BURST_READ_LEN, m_stream_txb, m_stream_rxb);
-		chSysUnlockFromISR();
+		start_stream_read(true);
 		return;
 	}
 
@@ -144,6 +188,7 @@ void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin
 	m_spi_stream_enabled = false;
 	m_spi_stream_active = false;
 	m_spi_stream_complete = false;
+	m_spi_stream_pending = false;
 
 	if (!m_drdy_sem_init) {
 		// true = taken, so the thread waits for the first real interrupt.
@@ -185,6 +230,12 @@ void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin
 			"Write register of the LSM6DSV32X",
 			"[reg] [value]",
 			terminal_write_reg);
+
+	terminal_register_command_callback(
+			"lsm6dsv32x_stats",
+			"Print or reset LSM6DSV32X stream statistics",
+			"[reset]",
+			terminal_stats);
 
 	lsm6dsv32x_thread_ref = chThdCreateStatic(work_area, work_area_size,
 			NORMALPRIO, lsm6dsv32x_thread, NULL);
@@ -238,6 +289,12 @@ void lsm6dsv32x_init(i2c_bb_state *i2c_state,
 			"Write register of the LSM6DSV32X",
 			"[reg] [value]",
 			terminal_write_reg);
+
+	terminal_register_command_callback(
+			"lsm6dsv32x_stats",
+			"Print or reset LSM6DSV32X stream statistics",
+			"[reset]",
+			terminal_stats);
 
 	lsm6dsv32x_thread_ref = chThdCreateStatic(work_area, work_area_size,
 			NORMALPRIO, lsm6dsv32x_thread, NULL);
@@ -370,6 +427,7 @@ void lsm6dsv32x_stop(void) {
 		m_spi_stream_enabled = false;
 		m_spi_stream_active = false;
 		m_spi_stream_complete = false;
+		m_spi_stream_pending = false;
 		spiStop(m_spi_dev);
 		m_spi_dev = NULL;
 		m_use_spi = false;
@@ -379,6 +437,7 @@ void lsm6dsv32x_stop(void) {
 
 	terminal_unregister_callback(terminal_read_reg);
 	terminal_unregister_callback(terminal_write_reg);
+	terminal_unregister_callback(terminal_stats);
 }
 
 void lsm6dsv32x_set_read_callback(void(*func)(float *accel, float *gyro, float *mag)) {
@@ -395,6 +454,7 @@ static void spi_end_cb(SPIDriver *spi_dev) {
 	if (m_spi_stream_active) {
 		m_spi_stream_active = false;
 		m_spi_stream_complete = true;
+		m_stat_stream_completed++;
 
 		if (m_drdy_sem_init) {
 			chSysLockFromISR();
@@ -441,7 +501,13 @@ static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len) {
 	spiReleaseBus(m_spi_dev);
 	m_spi_sync_active = false;
 
-	return msg == MSG_OK;
+	bool ok = msg == MSG_OK;
+
+	if (!ok) {
+		m_stat_sync_transfer_failed++;
+	}
+
+	return ok;
 }
 
 static void prepare_stream_read(void) {
@@ -457,6 +523,7 @@ static void prepare_stream_read(void) {
 
 static bool copy_stream_read(uint8_t *data, int len) {
 	if (data == NULL || len != (LSM6DSV32X_BURST_READ_LEN - 1) || !m_spi_stream_complete) {
+		m_stat_copy_failed++;
 		return false;
 	}
 
@@ -465,13 +532,16 @@ static bool copy_stream_read(uint8_t *data, int len) {
 	}
 
 	m_spi_stream_complete = false;
+	m_stat_stream_copied++;
 	return true;
 }
 
 static void recover_spi_stream(void) {
+	m_stat_recover++;
 	m_spi_stream_enabled = false;
 	m_spi_stream_active = false;
 	m_spi_stream_complete = false;
+	m_spi_stream_pending = false;
 
 	if (m_drdy_sem_init) {
 		chBSemReset(&m_drdy_sem, true);
@@ -485,6 +555,36 @@ static void recover_spi_stream(void) {
 			spiStart(m_spi_dev, &m_spi_cfg);
 		}
 	}
+}
+
+static bool start_stream_read(bool from_isr) {
+	if (!m_spi_stream_enabled || m_spi_dev == NULL || m_nss_gpio == NULL ||
+			m_spi_stream_active || m_spi_stream_complete || m_spi_sync_active ||
+			m_spi_dev->state != SPI_READY) {
+		return false;
+	}
+
+	m_spi_stream_complete = false;
+	m_spi_stream_active = true;
+	m_stat_stream_started++;
+
+	// Same DMA/RXNE guard used by the async encoder SPI drivers.
+	volatile uint32_t rxne_clear = m_spi_dev->spi->DR;
+	(void)rxne_clear;
+
+	palClearPad(m_nss_gpio, m_nss_pin);
+
+	if (from_isr) {
+		chSysLockFromISR();
+		spiStartExchangeI(m_spi_dev, LSM6DSV32X_BURST_READ_LEN, m_stream_txb, m_stream_rxb);
+		chSysUnlockFromISR();
+	} else {
+		chSysLock();
+		spiStartExchangeI(m_spi_dev, LSM6DSV32X_BURST_READ_LEN, m_stream_txb, m_stream_rxb);
+		chSysUnlock();
+	}
+
+	return true;
 }
 
 static bool read_regs(uint8_t reg, uint8_t *data, int len) {
@@ -663,6 +763,143 @@ static void terminal_write_reg(int argc, const char **argv) {
 	}
 }
 
+static void terminal_stats(int argc, const char **argv) {
+	if (argc == 2 && strcmp(argv[1], "reset") == 0) {
+		reset_stats();
+		commands_printf("LSM6DSV32X stats reset\n");
+		return;
+	}
+
+	if (argc != 1) {
+		commands_printf("Usage: lsm6dsv32x_stats [reset]\n");
+		return;
+	}
+
+	uint32_t drdy;
+	uint32_t ignored_disabled;
+	uint32_t ignored_active;
+	uint32_t ignored_complete;
+	uint32_t pending_restarted;
+	uint32_t pending_restart_failed;
+	uint32_t ignored_sync;
+	uint32_t ignored_not_ready;
+	uint32_t stream_started;
+	uint32_t stream_completed;
+	uint32_t stream_copied;
+	uint32_t copy_failed;
+	uint32_t wait_timeout;
+	uint32_t recover;
+	uint32_t reset_ok;
+	uint32_t reset_fail;
+	uint32_t sync_failed;
+	uint32_t samples;
+	uint32_t min_sample_dt;
+	uint32_t max_sample_dt;
+	uint32_t last_sample_time;
+	uint32_t overruns;
+	int16_t raw[6];
+	int16_t max_raw_delta[6];
+	bool stream_enabled;
+	bool stream_active;
+	bool stream_complete;
+	bool stream_pending;
+	bool sync_active;
+	spistate_t spi_state = SPI_STOP;
+
+	chSysLock();
+	drdy = m_stat_drdy;
+	ignored_disabled = m_stat_drdy_ignored_disabled;
+	ignored_active = m_stat_drdy_ignored_active;
+	ignored_complete = m_stat_drdy_ignored_complete;
+	pending_restarted = m_stat_pending_restarted;
+	pending_restart_failed = m_stat_pending_restart_failed;
+	ignored_sync = m_stat_drdy_ignored_sync;
+	ignored_not_ready = m_stat_drdy_ignored_not_ready;
+	stream_started = m_stat_stream_started;
+	stream_completed = m_stat_stream_completed;
+	stream_copied = m_stat_stream_copied;
+	copy_failed = m_stat_copy_failed;
+	wait_timeout = m_stat_wait_timeout;
+	recover = m_stat_recover;
+	reset_ok = m_stat_reset_ok;
+	reset_fail = m_stat_reset_fail;
+	sync_failed = m_stat_sync_transfer_failed;
+	samples = m_stat_samples;
+	min_sample_dt = m_stat_min_sample_dt;
+	max_sample_dt = m_stat_max_sample_dt;
+	last_sample_time = m_stat_last_sample_time;
+	overruns = m_spi_stream_overruns;
+	for (int i = 0; i < 6; i++) {
+		raw[i] = m_stat_last_raw[i];
+		max_raw_delta[i] = m_stat_max_raw_delta[i];
+	}
+	stream_enabled = m_spi_stream_enabled;
+	stream_active = m_spi_stream_active;
+	stream_complete = m_spi_stream_complete;
+	stream_pending = m_spi_stream_pending;
+	sync_active = m_spi_sync_active;
+	if (m_spi_dev != NULL) {
+		spi_state = m_spi_dev->state;
+	}
+	chSysUnlock();
+
+	uint32_t lost_est = drdy > stream_copied ? drdy - stream_copied : 0;
+	uint32_t pending_done = stream_completed > stream_copied ? stream_completed - stream_copied : 0;
+	uint32_t pending_started = stream_started > stream_completed ? stream_started - stream_completed : 0;
+	uint32_t age_ms = last_sample_time != 0 ? ST2MS(chVTGetSystemTimeX() - last_sample_time) : 0;
+	uint32_t min_dt_us = min_sample_dt == 0xFFFFFFFF ? 0 : ST2US(min_sample_dt);
+	uint32_t max_dt_us = ST2US(max_sample_dt);
+
+	commands_printf("LSM6DSV32X stats:");
+	commands_printf("  mode spi=%d int1=%d rate=%dHz spi_state=%d", m_use_spi, m_use_int1, rate_hz, spi_state);
+	commands_printf("  flags en=%d active=%d complete=%d pending=%d sync=%d",
+			stream_enabled, stream_active, stream_complete, stream_pending, sync_active);
+	commands_printf("  drdy=%u started=%u completed=%u copied=%u samples=%u", drdy, stream_started, stream_completed, stream_copied, samples);
+	commands_printf("  lost_est=%u pending_started=%u pending_done=%u overruns=%u", lost_est, pending_started, pending_done, overruns);
+	commands_printf("  overrun reasons active=%u complete=%u sync=%u not_ready=%u disabled=%u",
+			ignored_active, ignored_complete, ignored_sync, ignored_not_ready, ignored_disabled);
+	commands_printf("  pending restart ok=%u fail=%u", pending_restarted, pending_restart_failed);
+	commands_printf("  failures copy=%u timeout=%u recover=%u reset_ok=%u reset_fail=%u sync_fail=%u",
+			copy_failed, wait_timeout, recover, reset_ok, reset_fail, sync_failed);
+	commands_printf("  sample_dt_us min=%u max=%u last_age_ms=%u", min_dt_us, max_dt_us, age_ms);
+	commands_printf("  last_raw g=[%d %d %d] a=[%d %d %d]",
+			raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]);
+	commands_printf("  max_raw_delta g=[%d %d %d] a=[%d %d %d]",
+			max_raw_delta[0], max_raw_delta[1], max_raw_delta[2],
+			max_raw_delta[3], max_raw_delta[4], max_raw_delta[5]);
+}
+
+static void reset_stats(void) {
+	chSysLock();
+	m_spi_stream_overruns = 0;
+	m_stat_drdy = 0;
+	m_stat_drdy_ignored_disabled = 0;
+	m_stat_drdy_ignored_active = 0;
+	m_stat_drdy_ignored_complete = 0;
+	m_stat_pending_restarted = 0;
+	m_stat_pending_restart_failed = 0;
+	m_stat_drdy_ignored_sync = 0;
+	m_stat_drdy_ignored_not_ready = 0;
+	m_stat_stream_started = 0;
+	m_stat_stream_completed = 0;
+	m_stat_stream_copied = 0;
+	m_stat_copy_failed = 0;
+	m_stat_wait_timeout = 0;
+	m_stat_recover = 0;
+	m_stat_reset_ok = 0;
+	m_stat_reset_fail = 0;
+	m_stat_sync_transfer_failed = 0;
+	m_stat_samples = 0;
+	m_stat_last_sample_time = 0;
+	m_stat_min_sample_dt = 0xFFFFFFFF;
+	m_stat_max_sample_dt = 0;
+	for (int i = 0; i < 6; i++) {
+		m_stat_last_raw[i] = 0;
+		m_stat_max_raw_delta[i] = 0;
+	}
+	chSysUnlock();
+}
+
 static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 	(void)arg;
 
@@ -687,9 +924,27 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 			if (wait_res == MSG_OK) {
 				if (m_use_spi) {
 					res = copy_stream_read(rxb, 12);
+					bool restart_pending = false;
+
+					if (res) {
+						chSysLock();
+						restart_pending = m_spi_stream_pending;
+						m_spi_stream_pending = false;
+						chSysUnlock();
+					}
+
+					if (restart_pending) {
+						if (start_stream_read(false)) {
+							m_stat_pending_restarted++;
+						} else {
+							m_stat_pending_restart_failed++;
+						}
+					}
 				} else {
 					res = read_regs(LSM6DSV32X_OUTX_L_G, rxb, 12);
 				}
+			} else {
+				m_stat_wait_timeout++;
 			}
 		} else {
 			// Read gyro and accel output registers: 12 bytes starting at OUTX_L_G.
@@ -704,10 +959,13 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 			}
 
 			if (reset_init_lsm6dsv32x()) {
+				m_stat_reset_ok++;
 				if (m_use_spi && m_use_int1) {
 					prepare_stream_read();
 					m_spi_stream_enabled = true;
 				}
+			} else {
+				m_stat_reset_fail++;
 			}
 
 			chThdSleepMilliseconds(10);
@@ -725,6 +983,43 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 		int16_t raw_ax = (int16_t)(((uint16_t)rxb[7] << 8) | rxb[6]);
 		int16_t raw_ay = (int16_t)(((uint16_t)rxb[9] << 8) | rxb[8]);
 		int16_t raw_az = (int16_t)(((uint16_t)rxb[11] << 8) | rxb[10]);
+
+		systime_t sample_time = chVTGetSystemTimeX();
+		chSysLock();
+		if (m_stat_last_sample_time != 0) {
+			uint32_t sample_dt = sample_time - m_stat_last_sample_time;
+			if (sample_dt < m_stat_min_sample_dt) {
+				m_stat_min_sample_dt = sample_dt;
+			}
+
+			if (sample_dt > m_stat_max_sample_dt) {
+				m_stat_max_sample_dt = sample_dt;
+			}
+
+			int16_t raw_now[6] = {
+					raw_gx, raw_gy, raw_gz, raw_ax, raw_ay, raw_az,
+			};
+
+			for (int i = 0; i < 6; i++) {
+				int32_t delta = (int32_t)raw_now[i] - (int32_t)m_stat_last_raw[i];
+				if (delta < 0) {
+					delta = -delta;
+				}
+
+				if (delta > m_stat_max_raw_delta[i]) {
+					m_stat_max_raw_delta[i] = delta > 32767 ? 32767 : (int16_t)delta;
+				}
+			}
+		}
+		m_stat_last_sample_time = sample_time;
+		m_stat_samples++;
+		m_stat_last_raw[0] = raw_gx;
+		m_stat_last_raw[1] = raw_gy;
+		m_stat_last_raw[2] = raw_gz;
+		m_stat_last_raw[3] = raw_ax;
+		m_stat_last_raw[4] = raw_ay;
+		m_stat_last_raw[5] = raw_az;
+		chSysUnlock();
 
 		// Gyro: +-2000 dps, sensitivity = 70.0 mdps/LSB.
 		float gx = (float)raw_gx * 70.0f / 1000.0f;
