@@ -26,6 +26,8 @@
 
 #include <stdio.h>
 
+#define LSM6DSV32X_BURST_READ_LEN	13
+
 static thread_t *lsm6dsv32x_thread_ref = NULL;
 static binary_semaphore_t m_drdy_sem;
 static binary_semaphore_t m_spi_sem;
@@ -38,6 +40,13 @@ static stm32_gpio_t *m_nss_gpio;
 static int m_nss_pin;
 static bool m_use_spi = false;
 static volatile uint16_t lsm6dsv32x_addr;
+static uint8_t m_stream_txb[LSM6DSV32X_BURST_READ_LEN];
+static uint8_t m_stream_rxb[LSM6DSV32X_BURST_READ_LEN];
+static volatile bool m_spi_stream_enabled = false;
+static volatile bool m_spi_stream_active = false;
+static volatile bool m_spi_stream_complete = false;
+static volatile bool m_spi_sync_active = false;
+static volatile uint32_t m_spi_stream_overruns = 0;
 
 // Default rate. Can be changed before init with lsm6dsv32x_set_rate_hz().
 static int rate_hz = 1000;
@@ -48,6 +57,9 @@ static IMU_FILTER filter = (IMU_FILTER)0;
 
 static void spi_end_cb(SPIDriver *spi_dev);
 static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len);
+static void prepare_stream_read(void);
+static bool copy_stream_read(uint8_t *data, int len);
+static void recover_spi_stream(void);
 
 // SPI mode 3: CPOL = 1, CPHA = 1.
 // Prescaler /8 gives ~5.25 MHz on SPI3 @ 42 MHz APB1.
@@ -86,8 +98,33 @@ void lsm6dsv32x_set_filter(IMU_FILTER f) {
 	filter = f;
 }
 
-// Hardware SPI init. Call this from imu_init_lsm6dsv32x_spi which configures pin AFs.
 void lsm6dsv32x_int1_isr(void) {
+	if (m_use_spi) {
+		if (!m_spi_stream_enabled || m_spi_dev == NULL || m_nss_gpio == NULL) {
+			return;
+		}
+
+		if (m_spi_stream_active || m_spi_stream_complete ||
+				m_spi_sync_active || m_spi_dev->state != SPI_READY) {
+			m_spi_stream_overruns++;
+			return;
+		}
+
+		m_spi_stream_complete = false;
+		m_spi_stream_active = true;
+
+		// Same DMA/RXNE guard used by the async encoder SPI drivers.
+		volatile uint32_t rxne_clear = m_spi_dev->spi->DR;
+		(void)rxne_clear;
+
+		palClearPad(m_nss_gpio, m_nss_pin);
+
+		chSysLockFromISR();
+		spiStartExchangeI(m_spi_dev, LSM6DSV32X_BURST_READ_LEN, m_stream_txb, m_stream_rxb);
+		chSysUnlockFromISR();
+		return;
+	}
+
 	if (m_drdy_sem_init) {
 		chSysLockFromISR();
 		chBSemSignalI(&m_drdy_sem);
@@ -104,6 +141,9 @@ void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin
 	m_spi_dev = spi_dev;
 	m_nss_gpio = nss_gpio;
 	m_nss_pin = nss_pin;
+	m_spi_stream_enabled = false;
+	m_spi_stream_active = false;
+	m_spi_stream_complete = false;
 
 	if (!m_drdy_sem_init) {
 		// true = taken, so the thread waits for the first real interrupt.
@@ -130,6 +170,9 @@ void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin
 		commands_printf("LSM6DSV32X SPI Init FAILED");
 		return;
 	}
+
+	prepare_stream_read();
+	m_spi_stream_enabled = true;
 
 	terminal_register_command_callback(
 			"lsm6dsv32x_read_reg",
@@ -324,6 +367,9 @@ void lsm6dsv32x_stop(void) {
 	}
 
 	if (m_use_spi && m_spi_dev != NULL) {
+		m_spi_stream_enabled = false;
+		m_spi_stream_active = false;
+		m_spi_stream_complete = false;
 		spiStop(m_spi_dev);
 		m_spi_dev = NULL;
 		m_use_spi = false;
@@ -346,6 +392,19 @@ static void spi_end_cb(SPIDriver *spi_dev) {
 		palSetPad(m_nss_gpio, m_nss_pin);
 	}
 
+	if (m_spi_stream_active) {
+		m_spi_stream_active = false;
+		m_spi_stream_complete = true;
+
+		if (m_drdy_sem_init) {
+			chSysLockFromISR();
+			chBSemSignalI(&m_drdy_sem);
+			chSysUnlockFromISR();
+		}
+
+		return;
+	}
+
 	if (m_spi_sem_init) {
 		chSysLockFromISR();
 		chBSemSignalI(&m_spi_sem);
@@ -355,6 +414,13 @@ static void spi_end_cb(SPIDriver *spi_dev) {
 
 static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len) {
 	if (m_spi_dev == NULL || txb == NULL || rxb == NULL || len == 0 || !m_spi_sem_init) {
+		return false;
+	}
+
+	m_spi_sync_active = true;
+
+	if (m_spi_stream_active) {
+		m_spi_sync_active = false;
 		return false;
 	}
 
@@ -373,8 +439,52 @@ static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len) {
 
 	msg_t msg = chBSemWait(&m_spi_sem);
 	spiReleaseBus(m_spi_dev);
+	m_spi_sync_active = false;
 
 	return msg == MSG_OK;
+}
+
+static void prepare_stream_read(void) {
+	m_stream_txb[0] = LSM6DSV32X_OUTX_L_G | LSM6DSV32X_SPI_RD_MASK;
+
+	for (int i = 1; i < LSM6DSV32X_BURST_READ_LEN; i++) {
+		m_stream_txb[i] = 0;
+		m_stream_rxb[i] = 0;
+	}
+
+	m_stream_rxb[0] = 0;
+}
+
+static bool copy_stream_read(uint8_t *data, int len) {
+	if (data == NULL || len != (LSM6DSV32X_BURST_READ_LEN - 1) || !m_spi_stream_complete) {
+		return false;
+	}
+
+	for (int i = 0; i < len; i++) {
+		data[i] = m_stream_rxb[i + 1];
+	}
+
+	m_spi_stream_complete = false;
+	return true;
+}
+
+static void recover_spi_stream(void) {
+	m_spi_stream_enabled = false;
+	m_spi_stream_active = false;
+	m_spi_stream_complete = false;
+
+	if (m_drdy_sem_init) {
+		chBSemReset(&m_drdy_sem, true);
+	}
+
+	if (m_spi_dev != NULL) {
+		palSetPad(m_nss_gpio, m_nss_pin);
+
+		if (m_spi_dev->state != SPI_READY) {
+			spiStop(m_spi_dev);
+			spiStart(m_spi_dev, &m_spi_cfg);
+		}
+	}
 }
 
 static bool read_regs(uint8_t reg, uint8_t *data, int len) {
@@ -569,26 +679,37 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 
 	while (!chThdShouldTerminateX()) {
 		uint8_t rxb[12];
+		bool res = false;
 
 		if (m_use_int1) {
-			/*
-			 * Wait for gyro DRDY interrupt.
-			 * Then immediately read gyro + accel output registers in one SPI burst.
-			 *
-			 * No STATUS_REG polling and no FIFO here to keep latency and CPU load low.
-			 */
-			chBSemWaitTimeout(&m_drdy_sem, int1_timeout);
+			msg_t wait_res = chBSemWaitTimeout(&m_drdy_sem, int1_timeout);
+
+			if (wait_res == MSG_OK) {
+				if (m_use_spi) {
+					res = copy_stream_read(rxb, 12);
+				} else {
+					res = read_regs(LSM6DSV32X_OUTX_L_G, rxb, 12);
+				}
+			}
+		} else {
+			// Read gyro and accel output registers: 12 bytes starting at OUTX_L_G.
+			res = read_regs(LSM6DSV32X_OUTX_L_G, rxb, 12);
 		}
 
-		// Read gyro and accel output registers: 12 bytes starting at OUTX_L_G.
-		bool res = read_regs(LSM6DSV32X_OUTX_L_G, rxb, 12);
-
 		if (!res) {
-			if (!m_use_spi) {
+			if (m_use_spi) {
+				recover_spi_stream();
+			} else {
 				i2c_bb_restore_bus(m_i2c_bb);
 			}
 
-			reset_init_lsm6dsv32x();
+			if (reset_init_lsm6dsv32x()) {
+				if (m_use_spi && m_use_int1) {
+					prepare_stream_read();
+					m_spi_stream_enabled = true;
+				}
+			}
+
 			chThdSleepMilliseconds(10);
 
 			iteration_timer = chVTGetSystemTimeX();
