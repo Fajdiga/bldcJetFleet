@@ -53,6 +53,7 @@ static volatile uint32_t m_stat_drdy = 0;
 static volatile uint32_t m_stat_drdy_ignored_disabled = 0;
 static volatile uint32_t m_stat_drdy_ignored_active = 0;
 static volatile uint32_t m_stat_drdy_ignored_complete = 0;
+static volatile uint32_t m_stat_pending_latched = 0;
 static volatile uint32_t m_stat_pending_restarted = 0;
 static volatile uint32_t m_stat_pending_restart_failed = 0;
 static volatile uint32_t m_stat_drdy_ignored_sync = 0;
@@ -141,16 +142,14 @@ void lsm6dsv32x_int1_isr(void) {
 		bool busy_not_ready = m_spi_dev->state != SPI_READY;
 
 		if (busy_active || busy_complete || busy_sync || busy_not_ready) {
-			m_spi_stream_overruns++;
+			bool can_latch_pending = busy_active || busy_complete || busy_not_ready;
 
 			if (busy_active) {
 				m_stat_drdy_ignored_active++;
-				m_spi_stream_pending = true;
 			}
 
 			if (busy_complete) {
 				m_stat_drdy_ignored_complete++;
-				m_spi_stream_pending = true;
 			}
 
 			if (busy_sync) {
@@ -159,7 +158,13 @@ void lsm6dsv32x_int1_isr(void) {
 
 			if (busy_not_ready) {
 				m_stat_drdy_ignored_not_ready++;
+			}
+
+			if (can_latch_pending && !m_spi_stream_pending) {
 				m_spi_stream_pending = true;
+				m_stat_pending_latched++;
+			} else {
+				m_spi_stream_overruns++;
 			}
 
 			return;
@@ -779,6 +784,7 @@ static void terminal_stats(int argc, const char **argv) {
 	uint32_t ignored_disabled;
 	uint32_t ignored_active;
 	uint32_t ignored_complete;
+	uint32_t pending_latched;
 	uint32_t pending_restarted;
 	uint32_t pending_restart_failed;
 	uint32_t ignored_sync;
@@ -811,6 +817,7 @@ static void terminal_stats(int argc, const char **argv) {
 	ignored_disabled = m_stat_drdy_ignored_disabled;
 	ignored_active = m_stat_drdy_ignored_active;
 	ignored_complete = m_stat_drdy_ignored_complete;
+	pending_latched = m_stat_pending_latched;
 	pending_restarted = m_stat_pending_restarted;
 	pending_restart_failed = m_stat_pending_restart_failed;
 	ignored_sync = m_stat_drdy_ignored_sync;
@@ -858,7 +865,8 @@ static void terminal_stats(int argc, const char **argv) {
 	commands_printf("  lost_est=%u pending_started=%u pending_done=%u overruns=%u", lost_est, pending_started, pending_done, overruns);
 	commands_printf("  overrun reasons active=%u complete=%u sync=%u not_ready=%u disabled=%u",
 			ignored_active, ignored_complete, ignored_sync, ignored_not_ready, ignored_disabled);
-	commands_printf("  pending restart ok=%u fail=%u", pending_restarted, pending_restart_failed);
+	commands_printf("  pending latched=%u restart ok=%u fail=%u",
+			pending_latched, pending_restarted, pending_restart_failed);
 	commands_printf("  failures copy=%u timeout=%u recover=%u reset_ok=%u reset_fail=%u sync_fail=%u",
 			copy_failed, wait_timeout, recover, reset_ok, reset_fail, sync_failed);
 	commands_printf("  sample_dt_us min=%u max=%u last_age_ms=%u", min_dt_us, max_dt_us, age_ms);
@@ -876,6 +884,7 @@ static void reset_stats(void) {
 	m_stat_drdy_ignored_disabled = 0;
 	m_stat_drdy_ignored_active = 0;
 	m_stat_drdy_ignored_complete = 0;
+	m_stat_pending_latched = 0;
 	m_stat_pending_restarted = 0;
 	m_stat_pending_restart_failed = 0;
 	m_stat_drdy_ignored_sync = 0;
