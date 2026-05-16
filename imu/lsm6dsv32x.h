@@ -99,6 +99,9 @@ void lsm6dsv32x_int1_isr(void);
 // WHO_AM_I expected value
 #define LSM6DSV32X_WHO_AM_I_VAL					0x70
 
+/************** IF_CFG (0x03) - Interface configuration *******************/
+#define LSM6DSV32X_I2C_I3C_DISABLE			0x01
+
 /************** INT1_CTRL (0x0D) - INT1 pin control *******************/
 #define LSM6DSV32X_INT1_DRDY_XL				 0x01
 #define LSM6DSV32X_INT1_DRDY_G				 0x02

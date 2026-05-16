@@ -48,6 +48,7 @@ static volatile bool m_spi_stream_active = false;
 static volatile bool m_spi_stream_complete = false;
 static volatile bool m_spi_stream_pending = false;
 static volatile bool m_spi_sync_active = false;
+static volatile bool m_spi_dma_error = false;
 static volatile uint32_t m_spi_stream_overruns = 0;
 static volatile uint32_t m_stat_drdy = 0;
 static volatile uint32_t m_stat_drdy_ignored_disabled = 0;
@@ -67,6 +68,7 @@ static volatile uint32_t m_stat_recover = 0;
 static volatile uint32_t m_stat_reset_ok = 0;
 static volatile uint32_t m_stat_reset_fail = 0;
 static volatile uint32_t m_stat_sync_transfer_failed = 0;
+static volatile uint32_t m_stat_spi_dma_errors = 0;
 static volatile uint32_t m_stat_samples = 0;
 static volatile uint32_t m_stat_last_sample_time = 0;
 static volatile uint32_t m_stat_min_sample_dt = 0xFFFFFFFF;
@@ -82,6 +84,7 @@ static int rate_hz = 1000;
 static IMU_FILTER filter = (IMU_FILTER)0;
 
 static void spi_end_cb(SPIDriver *spi_dev);
+static void spi_error_cb(SPIDriver *spi_dev);
 static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len);
 static void prepare_stream_read(void);
 static bool copy_stream_read(uint8_t *data, int len);
@@ -194,6 +197,7 @@ void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin
 	m_spi_stream_active = false;
 	m_spi_stream_complete = false;
 	m_spi_stream_pending = false;
+	m_spi_dma_error = false;
 
 	if (!m_drdy_sem_init) {
 		// true = taken, so the thread waits for the first real interrupt.
@@ -207,6 +211,7 @@ void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin
 	}
 
 	palSetPad(m_nss_gpio, m_nss_pin);
+	m_spi_dev->err_cb = spi_error_cb;
 	spiStart(m_spi_dev, &m_spi_cfg);
 
 	// Verify WHO_AM_I.
@@ -312,6 +317,12 @@ static bool reset_init_lsm6dsv32x(void) {
 	}
 
 	chThdSleepMilliseconds(10);
+
+	if (m_use_spi && !write_config_reg(LSM6DSV32X_IF_CFG,
+			LSM6DSV32X_I2C_I3C_DISABLE,
+			"SPI Interface Config")) {
+		return false;
+	}
 
 	/*
 	 * BDU:
@@ -433,7 +444,9 @@ void lsm6dsv32x_stop(void) {
 		m_spi_stream_active = false;
 		m_spi_stream_complete = false;
 		m_spi_stream_pending = false;
+		m_spi_dma_error = false;
 		spiStop(m_spi_dev);
+		m_spi_dev->err_cb = NULL;
 		m_spi_dev = NULL;
 		m_use_spi = false;
 	}
@@ -477,6 +490,13 @@ static void spi_end_cb(SPIDriver *spi_dev) {
 	}
 }
 
+static void spi_error_cb(SPIDriver *spi_dev) {
+	(void)spi_dev;
+
+	m_spi_dma_error = true;
+	m_stat_spi_dma_errors++;
+}
+
 static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len) {
 	if (m_spi_dev == NULL || txb == NULL || rxb == NULL || len == 0 || !m_spi_sem_init) {
 		return false;
@@ -484,13 +504,14 @@ static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len) {
 
 	m_spi_sync_active = true;
 
-	if (m_spi_stream_active) {
+	if (m_spi_stream_active || m_spi_stream_complete) {
 		m_spi_sync_active = false;
 		return false;
 	}
 
 	chBSemReset(&m_spi_sem, true);
 	spiAcquireBus(m_spi_dev);
+	m_spi_dma_error = false;
 
 	// Same DMA/RXNE guard used by the async encoder SPI drivers.
 	volatile uint32_t rxne_clear = m_spi_dev->spi->DR;
@@ -503,10 +524,12 @@ static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len) {
 	chSysUnlock();
 
 	msg_t msg = chBSemWait(&m_spi_sem);
+	bool dma_error = m_spi_dma_error;
+	m_spi_dma_error = false;
 	spiReleaseBus(m_spi_dev);
 	m_spi_sync_active = false;
 
-	bool ok = msg == MSG_OK;
+	bool ok = msg == MSG_OK && !dma_error;
 
 	if (!ok) {
 		m_stat_sync_transfer_failed++;
@@ -527,7 +550,9 @@ static void prepare_stream_read(void) {
 }
 
 static bool copy_stream_read(uint8_t *data, int len) {
-	if (data == NULL || len != (LSM6DSV32X_BURST_READ_LEN - 1) || !m_spi_stream_complete) {
+	if (data == NULL || len != (LSM6DSV32X_BURST_READ_LEN - 1) ||
+			!m_spi_stream_complete || m_spi_dma_error) {
+		m_spi_dma_error = false;
 		m_stat_copy_failed++;
 		return false;
 	}
@@ -537,6 +562,7 @@ static bool copy_stream_read(uint8_t *data, int len) {
 	}
 
 	m_spi_stream_complete = false;
+	m_spi_dma_error = false;
 	m_stat_stream_copied++;
 	return true;
 }
@@ -547,6 +573,7 @@ static void recover_spi_stream(void) {
 	m_spi_stream_active = false;
 	m_spi_stream_complete = false;
 	m_spi_stream_pending = false;
+	m_spi_dma_error = false;
 
 	if (m_drdy_sem_init) {
 		chBSemReset(&m_drdy_sem, true);
@@ -570,6 +597,7 @@ static bool start_stream_read(bool from_isr) {
 	}
 
 	m_spi_stream_complete = false;
+	m_spi_dma_error = false;
 	m_spi_stream_active = true;
 	m_stat_stream_started++;
 
@@ -798,6 +826,7 @@ static void terminal_stats(int argc, const char **argv) {
 	uint32_t reset_ok;
 	uint32_t reset_fail;
 	uint32_t sync_failed;
+	uint32_t dma_errors;
 	uint32_t samples;
 	uint32_t min_sample_dt;
 	uint32_t max_sample_dt;
@@ -831,6 +860,7 @@ static void terminal_stats(int argc, const char **argv) {
 	reset_ok = m_stat_reset_ok;
 	reset_fail = m_stat_reset_fail;
 	sync_failed = m_stat_sync_transfer_failed;
+	dma_errors = m_stat_spi_dma_errors;
 	samples = m_stat_samples;
 	min_sample_dt = m_stat_min_sample_dt;
 	max_sample_dt = m_stat_max_sample_dt;
@@ -867,8 +897,8 @@ static void terminal_stats(int argc, const char **argv) {
 			ignored_active, ignored_complete, ignored_sync, ignored_not_ready, ignored_disabled);
 	commands_printf("  pending latched=%u restart ok=%u fail=%u",
 			pending_latched, pending_restarted, pending_restart_failed);
-	commands_printf("  failures copy=%u timeout=%u recover=%u reset_ok=%u reset_fail=%u sync_fail=%u",
-			copy_failed, wait_timeout, recover, reset_ok, reset_fail, sync_failed);
+	commands_printf("  failures copy=%u timeout=%u recover=%u reset_ok=%u reset_fail=%u sync_fail=%u dma=%u",
+			copy_failed, wait_timeout, recover, reset_ok, reset_fail, sync_failed, dma_errors);
 	commands_printf("  sample_dt_us min=%u max=%u last_age_ms=%u", min_dt_us, max_dt_us, age_ms);
 	commands_printf("  last_raw g=[%d %d %d] a=[%d %d %d]",
 			raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]);
@@ -898,6 +928,7 @@ static void reset_stats(void) {
 	m_stat_reset_ok = 0;
 	m_stat_reset_fail = 0;
 	m_stat_sync_transfer_failed = 0;
+	m_stat_spi_dma_errors = 0;
 	m_stat_samples = 0;
 	m_stat_last_sample_time = 0;
 	m_stat_min_sample_dt = 0xFFFFFFFF;

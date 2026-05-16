@@ -210,8 +210,13 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 		static systime_t time_last = 0;
 		utils_sys_lock_cnt();
 		if (eval_tp) {
-			cpu_use = 100.0 * (float)eval_tp->p_time / (float)(chVTGetSystemTimeX() - time_last);
-			time_last = chVTGetSystemTimeX();
+			systime_t now = chVTGetSystemTimeX();
+			systime_t elapsed = time_last == 0 ? now : now - time_last;
+			if (elapsed == 0) {
+				elapsed = 1;
+			}
+			cpu_use = 100.0 * (float)eval_tp->p_time / (float)elapsed;
+			time_last = now;
 			eval_tp->p_time = 0;
 		} else {
 			utils_sys_unlock_cnt();
