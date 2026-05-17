@@ -29,17 +29,24 @@
 
 #define LSM6DSV32X_BURST_READ_LEN	13
 
+typedef enum {
+	LSM6DSV32X_BUS_I2C,
+	LSM6DSV32X_BUS_SPI_BB,
+	LSM6DSV32X_BUS_SPI_HW,
+} lsm6dsv32x_bus_mode;
+
 static thread_t *lsm6dsv32x_thread_ref = NULL;
 static binary_semaphore_t m_drdy_sem;
 static binary_semaphore_t m_spi_sem;
 static bool m_drdy_sem_init = false;
 static bool m_spi_sem_init = false;
 static bool m_use_int1 = false;
-static i2c_bb_state *m_i2c_bb;
+static i2c_bb_state *m_i2c_bb = NULL;
+static spi_bb_state *m_spi_bb = NULL;
 static SPIDriver *m_spi_dev = NULL;
 static stm32_gpio_t *m_nss_gpio;
 static int m_nss_pin;
-static bool m_use_spi = false;
+static lsm6dsv32x_bus_mode m_bus_mode = LSM6DSV32X_BUS_I2C;
 static volatile uint16_t lsm6dsv32x_addr;
 static uint8_t m_stream_txb[LSM6DSV32X_BURST_READ_LEN];
 static uint8_t m_stream_rxb[LSM6DSV32X_BURST_READ_LEN];
@@ -131,7 +138,7 @@ void lsm6dsv32x_set_filter(IMU_FILTER f) {
 }
 
 void lsm6dsv32x_int1_isr(void) {
-	if (m_use_spi) {
+	if (m_bus_mode == LSM6DSV32X_BUS_SPI_HW) {
 		m_stat_drdy++;
 
 		if (!m_spi_stream_enabled || m_spi_dev == NULL || m_nss_gpio == NULL) {
@@ -188,8 +195,10 @@ void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin
 		stkalign_t *work_area, size_t work_area_size) {
 
 	read_callback = 0;
-	m_use_spi = true;
+	m_bus_mode = LSM6DSV32X_BUS_SPI_HW;
 	m_use_int1 = true;
+	m_i2c_bb = NULL;
+	m_spi_bb = NULL;
 	m_spi_dev = spi_dev;
 	m_nss_gpio = nss_gpio;
 	m_nss_pin = nss_pin;
@@ -197,6 +206,7 @@ void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin
 	m_spi_stream_active = false;
 	m_spi_stream_complete = false;
 	m_spi_stream_pending = false;
+	m_spi_sync_active = false;
 	m_spi_dma_error = false;
 
 	if (!m_drdy_sem_init) {
@@ -251,13 +261,88 @@ void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin
 			NORMALPRIO, lsm6dsv32x_thread, NULL);
 }
 
+void lsm6dsv32x_init_spi_bb(spi_bb_state *spi_state,
+		stkalign_t *work_area, size_t work_area_size) {
+
+	read_callback = 0;
+	m_bus_mode = LSM6DSV32X_BUS_SPI_BB;
+	m_use_int1 = false;
+	m_i2c_bb = NULL;
+	m_spi_bb = spi_state;
+	m_spi_dev = NULL;
+	m_nss_gpio = NULL;
+	m_nss_pin = 0;
+	m_spi_stream_enabled = false;
+	m_spi_stream_active = false;
+	m_spi_stream_complete = false;
+	m_spi_stream_pending = false;
+	m_spi_sync_active = false;
+	m_spi_dma_error = false;
+
+	if (m_spi_bb == NULL) {
+		commands_printf("LSM6DSV32X SPI BB init missing bus");
+		return;
+	}
+
+	// LSM6DSV32X uses SPI mode 3, so keep SCK idle-high between transfers.
+	palSetPad(m_spi_bb->sck_gpio, m_spi_bb->sck_pin);
+
+	// Verify WHO_AM_I.
+	uint8_t who = read_single_reg(LSM6DSV32X_WHO_AM_I);
+	if (who != LSM6DSV32X_WHO_AM_I_VAL) {
+		commands_printf("LSM6DSV32X SPI BB WHO_AM_I mismatch: 0x%02X", who);
+		return;
+	}
+
+	if (!reset_init_lsm6dsv32x()) {
+		commands_printf("LSM6DSV32X SPI BB Init FAILED");
+		return;
+	}
+
+	terminal_register_command_callback(
+			"lsm6dsv32x_read_reg",
+			"Read register of the LSM6DSV32X",
+			"[reg]",
+			terminal_read_reg);
+
+	terminal_register_command_callback(
+			"lsm6dsv32x_write_reg",
+			"Write register of the LSM6DSV32X",
+			"[reg] [value]",
+			terminal_write_reg);
+
+	terminal_register_command_callback(
+			"lsm6dsv32x_stats",
+			"Print or reset LSM6DSV32X stream statistics",
+			"[reset]",
+			terminal_stats);
+
+	lsm6dsv32x_thread_ref = chThdCreateStatic(work_area, work_area_size,
+			NORMALPRIO, lsm6dsv32x_thread, NULL);
+}
+
 void lsm6dsv32x_init(i2c_bb_state *i2c_state,
 		stkalign_t *work_area, size_t work_area_size) {
 
 	read_callback = 0;
-	m_use_spi = false;
+	m_bus_mode = LSM6DSV32X_BUS_I2C;
 	m_use_int1 = false;
 	m_i2c_bb = i2c_state;
+	m_spi_bb = NULL;
+	m_spi_dev = NULL;
+	m_nss_gpio = NULL;
+	m_nss_pin = 0;
+	m_spi_stream_enabled = false;
+	m_spi_stream_active = false;
+	m_spi_stream_complete = false;
+	m_spi_stream_pending = false;
+	m_spi_sync_active = false;
+	m_spi_dma_error = false;
+
+	if (m_i2c_bb == NULL) {
+		commands_printf("LSM6DSV32X I2C init missing bus");
+		return;
+	}
 
 	// Recover I2C bus in case it is stuck.
 	i2c_bb_restore_bus(m_i2c_bb);
@@ -318,7 +403,7 @@ static bool reset_init_lsm6dsv32x(void) {
 
 	chThdSleepMilliseconds(10);
 
-	if (m_use_spi && !write_config_reg(LSM6DSV32X_IF_CFG,
+	if (m_bus_mode != LSM6DSV32X_BUS_I2C && !write_config_reg(LSM6DSV32X_IF_CFG,
 			LSM6DSV32X_I2C_I3C_DISABLE,
 			"SPI Interface Config")) {
 		return false;
@@ -439,7 +524,7 @@ void lsm6dsv32x_stop(void) {
 		chThdWait(lsm6dsv32x_thread_ref);
 	}
 
-	if (m_use_spi && m_spi_dev != NULL) {
+	if (m_bus_mode == LSM6DSV32X_BUS_SPI_HW && m_spi_dev != NULL) {
 		m_spi_stream_enabled = false;
 		m_spi_stream_active = false;
 		m_spi_stream_complete = false;
@@ -448,10 +533,19 @@ void lsm6dsv32x_stop(void) {
 		spiStop(m_spi_dev);
 		m_spi_dev->err_cb = NULL;
 		m_spi_dev = NULL;
-		m_use_spi = false;
 	}
 
 	lsm6dsv32x_thread_ref = NULL;
+	m_spi_stream_enabled = false;
+	m_spi_stream_active = false;
+	m_spi_stream_complete = false;
+	m_spi_stream_pending = false;
+	m_spi_sync_active = false;
+	m_spi_dma_error = false;
+	m_bus_mode = LSM6DSV32X_BUS_I2C;
+	m_use_int1 = false;
+	m_i2c_bb = NULL;
+	m_spi_bb = NULL;
 
 	terminal_unregister_callback(terminal_read_reg);
 	terminal_unregister_callback(terminal_write_reg);
@@ -621,7 +715,7 @@ static bool start_stream_read(bool from_isr) {
 }
 
 static bool read_regs(uint8_t reg, uint8_t *data, int len) {
-	if (m_use_spi) {
+	if (m_bus_mode == LSM6DSV32X_BUS_SPI_HW) {
 		uint8_t txb[len + 1];
 		uint8_t rxb[len + 1];
 
@@ -641,12 +735,35 @@ static bool read_regs(uint8_t reg, uint8_t *data, int len) {
 		return true;
 	}
 
+	if (m_bus_mode == LSM6DSV32X_BUS_SPI_BB) {
+		if (m_spi_bb == NULL || data == NULL || len <= 0) {
+			return false;
+		}
+
+		chMtxLock(&(m_spi_bb->mutex));
+		spi_bb_begin(m_spi_bb);
+		spi_bb_exchange_8_mode_3(m_spi_bb, reg | LSM6DSV32X_SPI_RD_MASK);
+		spi_bb_delay_short();
+
+		for (int i = 0; i < len; i++) {
+			data[i] = spi_bb_exchange_8_mode_3(m_spi_bb, 0);
+		}
+
+		spi_bb_end(m_spi_bb);
+		chMtxUnlock(&(m_spi_bb->mutex));
+		return true;
+	}
+
+	if (m_i2c_bb == NULL || data == NULL || len <= 0) {
+		return false;
+	}
+
 	uint8_t txb[1] = { reg };
 	return i2c_bb_tx_rx(m_i2c_bb, lsm6dsv32x_addr, txb, 1, data, len);
 }
 
 static bool write_single_reg(uint8_t reg, uint8_t value) {
-	if (m_use_spi) {
+	if (m_bus_mode == LSM6DSV32X_BUS_SPI_HW) {
 		uint8_t txb[2] = {
 				reg & LSM6DSV32X_SPI_WR_MASK,
 				value,
@@ -654,6 +771,25 @@ static bool write_single_reg(uint8_t reg, uint8_t value) {
 		uint8_t rxb[sizeof(txb)];
 
 		return spi_transfer(txb, rxb, sizeof(txb));
+	}
+
+	if (m_bus_mode == LSM6DSV32X_BUS_SPI_BB) {
+		if (m_spi_bb == NULL) {
+			return false;
+		}
+
+		chMtxLock(&(m_spi_bb->mutex));
+		spi_bb_begin(m_spi_bb);
+		spi_bb_exchange_8_mode_3(m_spi_bb, reg & LSM6DSV32X_SPI_WR_MASK);
+		spi_bb_delay();
+		spi_bb_exchange_8_mode_3(m_spi_bb, value);
+		spi_bb_end(m_spi_bb);
+		chMtxUnlock(&(m_spi_bb->mutex));
+		return true;
+	}
+
+	if (m_i2c_bb == NULL) {
+		return false;
 	}
 
 	uint8_t txb[2] = { reg, value };
@@ -840,8 +976,10 @@ static void terminal_stats(int argc, const char **argv) {
 	bool stream_pending;
 	bool sync_active;
 	spistate_t spi_state = SPI_STOP;
+	lsm6dsv32x_bus_mode bus_mode;
 
 	chSysLock();
+	bus_mode = m_bus_mode;
 	drdy = m_stat_drdy;
 	ignored_disabled = m_stat_drdy_ignored_disabled;
 	ignored_active = m_stat_drdy_ignored_active;
@@ -886,9 +1024,15 @@ static void terminal_stats(int argc, const char **argv) {
 	uint32_t age_ms = last_sample_time != 0 ? ST2MS(chVTGetSystemTimeX() - last_sample_time) : 0;
 	uint32_t min_dt_us = min_sample_dt == 0xFFFFFFFF ? 0 : ST2US(min_sample_dt);
 	uint32_t max_dt_us = ST2US(max_sample_dt);
+	const char *mode = "i2c";
+	if (bus_mode == LSM6DSV32X_BUS_SPI_BB) {
+		mode = "spi_bb";
+	} else if (bus_mode == LSM6DSV32X_BUS_SPI_HW) {
+		mode = "spi_hw";
+	}
 
 	commands_printf("LSM6DSV32X stats:");
-	commands_printf("  mode spi=%d int1=%d rate=%dHz spi_state=%d", m_use_spi, m_use_int1, rate_hz, spi_state);
+	commands_printf("  mode=%s int1=%d rate=%dHz spi_state=%d", mode, m_use_int1, rate_hz, spi_state);
 	commands_printf("  flags en=%d active=%d complete=%d pending=%d sync=%d",
 			stream_enabled, stream_active, stream_complete, stream_pending, sync_active);
 	commands_printf("  drdy=%u started=%u completed=%u copied=%u samples=%u", drdy, stream_started, stream_completed, stream_copied, samples);
@@ -962,7 +1106,7 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 			msg_t wait_res = chBSemWaitTimeout(&m_drdy_sem, int1_timeout);
 
 			if (wait_res == MSG_OK) {
-				if (m_use_spi) {
+				if (m_bus_mode == LSM6DSV32X_BUS_SPI_HW) {
 					res = copy_stream_read(rxb, 12);
 					bool restart_pending = false;
 
@@ -992,15 +1136,15 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 		}
 
 		if (!res) {
-			if (m_use_spi) {
+			if (m_bus_mode == LSM6DSV32X_BUS_SPI_HW) {
 				recover_spi_stream();
-			} else {
+			} else if (m_bus_mode == LSM6DSV32X_BUS_I2C && m_i2c_bb != NULL) {
 				i2c_bb_restore_bus(m_i2c_bb);
 			}
 
 			if (reset_init_lsm6dsv32x()) {
 				m_stat_reset_ok++;
-				if (m_use_spi && m_use_int1) {
+				if (m_bus_mode == LSM6DSV32X_BUS_SPI_HW && m_use_int1) {
 					prepare_stream_read();
 					m_spi_stream_enabled = true;
 				}

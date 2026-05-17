@@ -217,18 +217,19 @@
 #define HW_ENC_TIM_ISR_VEC		TIM3_IRQHandler
 
 // ====================================================================================
-// SPI Stubs (no SPI hardware on G18 - PC12 not routed, PA4 is shutdown)
-// Required by NRF/encoder defaults in hw.h and encoder_cfg.c
+// Hall/encoder software SPI. PC6/PC7/PC8 are not routed to a hardware SPI
+// peripheral, so HW_SPI_DEV is intentionally not defined on G18.
+// Encoder modes that use spi_bb can still use these generic pins.
 // ====================================================================================
 
-#define HW_SPI_PORT_NSS			0
-#define HW_SPI_PIN_NSS			0
-#define HW_SPI_PORT_SCK			0
-#define HW_SPI_PIN_SCK			0
+#define HW_SPI_PORT_NSS			HW_HALL_ENC_GPIO3
+#define HW_SPI_PIN_NSS			HW_HALL_ENC_PIN3
+#define HW_SPI_PORT_SCK			HW_HALL_ENC_GPIO1
+#define HW_SPI_PIN_SCK			HW_HALL_ENC_PIN1
 #define HW_SPI_PORT_MOSI		0
 #define HW_SPI_PIN_MOSI			0
-#define HW_SPI_PORT_MISO		0
-#define HW_SPI_PIN_MISO			0
+#define HW_SPI_PORT_MISO		HW_HALL_ENC_GPIO2
+#define HW_SPI_PIN_MISO			HW_HALL_ENC_PIN2
 
 // ====================================================================================
 // UART Peripheral

@@ -571,6 +571,10 @@
 // keep the configured filtering chain in the intended bandwidth range.
 #if defined(LSM6DSV32X_SPI_DEV)
 #define HW_LIM_IMU_SAMPLE_RATE_HZ	3840
+#elif defined(LSM6DSV32X_USE_SPI)
+#define HW_LIM_IMU_SAMPLE_RATE_HZ	2400
+#elif defined(LSM6DSV32X_SPEED_700KHZ)
+#define HW_LIM_IMU_SAMPLE_RATE_HZ	1200
 #elif defined(LSM6DSV32X_SDA_GPIO)
 #define HW_LIM_IMU_SAMPLE_RATE_HZ	900
 #elif defined(LSM6DS3_USE_SPI)
