@@ -24,6 +24,10 @@
 	#define HW_NAME					"Maxim_150"
 #elif defined(HWMAXIM_120)
 	#define HW_NAME					"Maxim_120"
+#elif defined(HWMAXIM_120_PH)
+	#define HW_NAME					"Maxim_120_PH"
+#elif defined(HWMAXIM_150_PH)
+	#define HW_NAME					"Maxim_150_PH"
 #else
 	#error "Must define hardware type"
 #endif
@@ -33,6 +37,11 @@
 #define INVERTED_SHUNT_POLARITY
 #define HW_HAS_PHASE_FILTERS
 #define HW_BOOT_VESC_CAN
+
+#if defined(HWMAXIM_120_PH) || defined(HWMAXIM_150_PH)
+#define IS_DRV_FAULT()			(!palReadPad(GPIOA, 4))
+#define HW_HAS_PHASE_SHUNTS
+#endif
 
 // Macros
 #define LED_GREEN_GPIO			GPIOC
@@ -149,11 +158,20 @@
 #ifndef VIN_R2
 #define VIN_R2					3300.0
 #endif
+#if defined(HWMAXIM_120_PH) || defined(HWMAXIM_150_PH)
+#ifndef CURRENT_AMP_GAIN
+#define CURRENT_AMP_GAIN		33.545
+#endif
+#ifndef CURRENT_SHUNT_RES
+#define CURRENT_SHUNT_RES		(0.0002 / 4.0)
+#endif
+#else
 #ifndef CURRENT_AMP_GAIN
 #define CURRENT_AMP_GAIN		20.0
 #endif
 #ifndef CURRENT_SHUNT_RES
 #define CURRENT_SHUNT_RES		(0.00025 / 3.0)
+#endif
 #endif
 
 #define ENCODER_SIN_VOLTS		ADC_VOLTS(ADC_IND_EXT4)
@@ -255,6 +273,8 @@
 
 // IMU
 #define LSM6DS3_USE_SPI
+#define LSM6DS3_HWSPI_DEV		SPID3
+#define LSM6DS3_HWSPI_AF		GPIO_AF_SPI3
 #define LSM6DS3_NSS_GPIO		GPIOA
 #define LSM6DS3_NSS_PIN			15
 #define LSM6DS3_SCK_GPIO		GPIOB
@@ -282,7 +302,7 @@
 #ifndef MCCONF_L_MIN_VOLTAGE
 #define MCCONF_L_MIN_VOLTAGE			20.0		// Minimum input voltage
 #endif
-#ifdef HWMAXIM_120
+#if defined(HWMAXIM_120_PH) || defined(HWMAXIM_120)
 #ifndef MCCONF_L_MAX_VOLTAGE
 #define MCCONF_L_MAX_VOLTAGE			112.0	// Maximum input voltage
 #endif
@@ -317,7 +337,7 @@
 #endif
 
 // Setting limits
-#ifdef HWMAXIM_120
+#if defined(HWMAXIM_120_PH) || defined(HWMAXIM_120)
 #define HW_LIM_CURRENT			-650.0, 650.0
 #define HW_LIM_CURRENT_IN		-650.0, 650.0
 #define HW_LIM_CURRENT_ABS		0.0, 900.0
@@ -330,7 +350,7 @@
 #endif
 #define HW_LIM_ERPM				-200e3, 200e3
 #define HW_LIM_DUTY_MIN			0.0, 0.1
-#define HW_LIM_DUTY_MAX			0.0, 0.99
+#define HW_LIM_DUTY_MAX			0.0, 1.0
 #define HW_LIM_TEMP_FET			-40.0, 110.0
 
 // HW-specific functions
