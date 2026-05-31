@@ -35,6 +35,7 @@ typedef struct {
 	stm32_gpio_t *miso_gpio;
 	int miso_pin;
 	mutex_t mutex;
+	bool mutex_init_done;
 } spi_bb_state;
 
 void spi_bb_init(spi_bb_state *s);
@@ -43,6 +44,8 @@ void ssc_bb_init(spi_bb_state *s);
 void ssc_bb_deinit(spi_bb_state *s);
 uint8_t spi_bb_exchange_8(spi_bb_state *s, uint8_t x);
 void spi_bb_transfer_8(spi_bb_state *s, uint8_t *in_buf, const uint8_t *out_buf, int length);
+uint8_t spi_bb_exchange_8_mode_3(spi_bb_state *s, uint8_t x);
+void spi_bb_transfer_8_mode_3(spi_bb_state *s, uint8_t *in_buf, const uint8_t *out_buf, int length);
 void spi_bb_transfer_16(spi_bb_state *s, uint16_t *in_buf, const uint16_t *out_buf, int length);
 void ssc_bb_transfer_16(spi_bb_state *s, uint16_t *in_buf, const uint16_t *out_buf, int length, bool write);
 void spi_bb_begin(spi_bb_state *s);

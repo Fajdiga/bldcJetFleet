@@ -29,6 +29,7 @@
 void lsm6dsv32x_set_rate_hz(int hz);
 void lsm6dsv32x_set_filter(IMU_FILTER f);
 void lsm6dsv32x_init(i2c_bb_state *i2c_state, stkalign_t *work_area, size_t work_area_size);
+void lsm6dsv32x_init_spi_bb(spi_bb_state *spi_state, stkalign_t *work_area, size_t work_area_size);
 void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin, stkalign_t *work_area, size_t work_area_size);
 void lsm6dsv32x_set_read_callback(void(*func)(float *accel, float *gyro, float *mag));
 void lsm6dsv32x_stop(void);
@@ -98,6 +99,9 @@ void lsm6dsv32x_int1_isr(void);
 
 // WHO_AM_I expected value
 #define LSM6DSV32X_WHO_AM_I_VAL					0x70
+
+/************** IF_CFG (0x03) - Interface configuration *******************/
+#define LSM6DSV32X_I2C_I3C_DISABLE			0x01
 
 /************** INT1_CTRL (0x0D) - INT1 pin control *******************/
 #define LSM6DSV32X_INT1_DRDY_XL				 0x01

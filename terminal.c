@@ -114,20 +114,29 @@ __attribute__((section(".text2"))) void terminal_process_string(char *str) {
 		thread_t *tp;
 		static const char *states[] = {CH_STATE_NAMES};
 		static systime_t last_check_time = 0;
+		systime_t now = chVTGetSystemTimeX();
+		systime_t elapsed = last_check_time == 0 ? now : now - last_check_time;
+		if (elapsed == 0) {
+			elapsed = 1;
+		}
 		commands_printf("    addr    stack prio refs     state           name motor stackmin  time    ");
 		commands_printf("-----------------------------------------------------------------------------");
 		tp = chRegFirstThread();
 		do {
 			int stack_left = utils_check_min_stack_left(tp);
+			systime_t thread_time;
+			chSysLock();
+			thread_time = tp->p_time;
+			tp->p_time = 0;
+			chSysUnlock();
 			commands_printf("%.8lx %.8lx %4lu %4lu %9s %14s %5lu %8d  %lu (%.1f %%)",
 					(uint32_t)tp, (uint32_t)tp->p_ctx.r13,
 					(uint32_t)tp->p_prio, (uint32_t)(tp->p_refs - 1),
-					states[tp->p_state], tp->p_name, tp->motor_selected, stack_left, (uint32_t)tp->p_time,
-					(double)(100.0 * (float)tp->p_time / (float)(chVTGetSystemTimeX() - last_check_time)));
-			tp->p_time = 0;
+					states[tp->p_state], tp->p_name, tp->motor_selected, stack_left, (uint32_t)thread_time,
+					(double)(100.0 * (float)thread_time / (float)elapsed));
 			tp = chRegNextThread(tp);
 		} while (tp != NULL);
-		last_check_time = chVTGetSystemTimeX();
+		last_check_time = now;
 		commands_printf(" ");
 	} else if (strcmp(argv[0], "fault") == 0) {
 		commands_printf("%s\n", mc_interface_fault_to_string(mc_interface_get_fault()));

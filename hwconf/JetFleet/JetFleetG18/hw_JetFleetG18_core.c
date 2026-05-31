@@ -31,9 +31,13 @@
 static volatile bool i2c_running = false;
 static mutex_t shutdown_mutex;
 static float bt_lastval = 0.0;
+static float bt_baseline = -1.0;
 static bool will_poweroff = false;
-static bool force_poweroff = false;
+static bool button_was_pressed = false;
 static unsigned int bt_hold_counter = 0;
+static unsigned int shutdown_request_counter = 0;
+static unsigned int bt_press_debounce_counter = 0;
+static unsigned int bt_release_debounce_counter = 0;
 
 // I2C configuration
 static const I2CConfig i2cfg = {
@@ -97,6 +101,8 @@ void hw_init_gpio(void) {
 
 	// ShutDown
 	palSetPadMode(HW_SHUTDOWN_GPIO, HW_SHUTDOWN_PIN, PAL_MODE_OUTPUT_OPENDRAIN);
+	// Release open-drain hold line; external pullup keeps the regulator latched.
+	HW_SHUTDOWN_HOLD_ON();
 	palSetPadMode(HW_SHUTDOWN_SENSE_GPIO, HW_SHUTDOWN_SENSE_PIN, PAL_MODE_INPUT_ANALOG);
 
 	// ADC Pins
@@ -274,73 +280,94 @@ void hw_try_restore_i2c(void) {
 	}
 }
 
-#define SHUTDOWN_PRESS_THRESHOLD_V 0.5
-#define SHUTDOWN_RELEASE_THRESHOLD_V 0.3
-#define TIME_500MS 50
-#define TIME_3S 300
+#define SHUTDOWN_PRESS_DELTA_V 0.30
+#define SHUTDOWN_RELEASE_DELTA_V 0.20
+#define TIME_100MS 10
+#define TIME_300MS 30
+#define TIME_1S 100
 #define ERPM_THRESHOLD 100
 
 /**
  * hw_sample_shutdown_button - return false if shutdown is requested, true otherwise.
  *
- * Behavior: level-based sampling tuned for hardware where shutdown signal is close to 0.15V
- * unpressed and around 0.7V when pressed. A hold above SHUTDOWN_PRESS_THRESHOLD_V starts
- * the hold counter. Shutdown happens on release below SHUTDOWN_RELEASE_THRESHOLD_V after
- * a valid hold time.
+ * Behavior: edge-based sampling tuned for hardware where the pressed/unpressed
+ * difference is small and the absolute ADC voltage drifts with temperature. A
+ * slow baseline follows the unpressed voltage until a debounced rising edge is
+ * detected. The hold time is counted while pressed, and shutdown is only
+ * requested after a debounced falling edge if the hold time was valid.
  *
- * If the motor is spinning faster, then a 3s press is required. Buzzer will beep once the
- * time has been reached. Again, shutdown happens on the falling edge.
+ * Shutdown happens on release after a valid hold time.
  *
- * Normal shutdown time:    0.5s
- * Emergency shutdown time: 3.0s
+ * Valid shutdown hold time: at least 1.0s
  */
 
 bool hw_sample_shutdown_button(void) {
-    chMtxLock(&shutdown_mutex);
-    float newval = ADC_VOLTS(ADC_IND_SHUTDOWN);
-    chMtxUnlock(&shutdown_mutex);
-    bt_lastval = newval;
-    bool pressed = newval > SHUTDOWN_PRESS_THRESHOLD_V;
-    bool released = newval < SHUTDOWN_RELEASE_THRESHOLD_V;
+	chMtxLock(&shutdown_mutex);
+	float newval = ADC_VOLTS(ADC_IND_SHUTDOWN);
+	chMtxUnlock(&shutdown_mutex);
+	bt_lastval = newval;
 
-    if (will_poweroff) {
-        if (!force_poweroff && fabsf(mc_interface_get_rpm()) > ERPM_THRESHOLD) {
-            will_poweroff = false;
-            force_poweroff = false;
-            bt_hold_counter = 0;
-            return true;
-        }
+	if (bt_baseline < 0.0) {
+		bt_baseline = newval;
+	}
 
-        if (released) {
-            will_poweroff = false;
-            force_poweroff = false;
-            bt_hold_counter = 0;
-            return false;
-        }
+	float bt_delta = newval - bt_baseline;
+	bool press_level = bt_delta > SHUTDOWN_PRESS_DELTA_V;
+	bool release_level = bt_delta < SHUTDOWN_RELEASE_DELTA_V;
 
-        return true;
-    }
+	if (shutdown_request_counter > 0) {
+		shutdown_request_counter--;
+		return false;
+	}
 
-    if (pressed) {
-        bt_hold_counter++;
+	if (!button_was_pressed && !press_level) {
+		bt_baseline += (newval - bt_baseline) * 0.02;
+	}
 
-        if (bt_hold_counter > TIME_500MS) {
-            if (fabsf(mc_interface_get_rpm()) < ERPM_THRESHOLD) {
-                will_poweroff = true;
-                bt_hold_counter = 0;
-            } else if (bt_hold_counter > TIME_3S) {
-                // Emergency power-down request while spinning.
-                will_poweroff = true;
-                force_poweroff = true;
-                bt_hold_counter = 0;
-            }
-        }
-    } else if (released) {
-        bt_hold_counter = 0;
-        force_poweroff = false;
-    }
+	if (!button_was_pressed) {
+		if (press_level) {
+			bt_press_debounce_counter++;
+		} else {
+			bt_press_debounce_counter = 0;
+		}
 
-    return true;
+		if (bt_press_debounce_counter >= TIME_100MS) {
+			button_was_pressed = true;
+			bt_hold_counter = bt_press_debounce_counter;
+			bt_press_debounce_counter = 0;
+			bt_release_debounce_counter = 0;
+			will_poweroff = false;
+		}
+	} else if (!release_level) {
+		bt_hold_counter++;
+		bt_release_debounce_counter = 0;
+	} else {
+		bt_release_debounce_counter++;
+
+		if (bt_release_debounce_counter < TIME_300MS) {
+			return true;
+		}
+
+		if (bt_hold_counter > TIME_1S &&
+				fabsf(mc_interface_get_rpm()) < ERPM_THRESHOLD) {
+			shutdown_request_counter = 80;
+			will_poweroff = true;
+		} else {
+			will_poweroff = false;
+		}
+
+		button_was_pressed = false;
+		bt_hold_counter = 0;
+		bt_release_debounce_counter = 0;
+		bt_baseline += (newval - bt_baseline) * 0.02;
+
+		if (shutdown_request_counter > 0) {
+			shutdown_request_counter--;
+			return false;
+		}
+	}
+
+	return true;
 }
 
 
@@ -366,9 +393,11 @@ static void terminal_button_test(int argc, const char **argv) {
 	(void)argv;
 
 	for (int i = 0;i < 40;i++) {
-		commands_printf("BT: %d:%d [%.2fV], TH=%.2f/%.2f, OFF=%d", HW_SAMPLE_SHUTDOWN(), bt_hold_counter,
-                        (double)bt_lastval, (double)SHUTDOWN_PRESS_THRESHOLD_V,
-                        (double)SHUTDOWN_RELEASE_THRESHOLD_V, (int)will_poweroff);
+		commands_printf("BT: %d:%d [%.2fV], BASE=%.2f, DELTA=%.2f, TH=%.2f/%.2f, PR=%d, OFF=%d",
+				HW_SAMPLE_SHUTDOWN(), bt_hold_counter, (double)bt_lastval,
+				(double)bt_baseline, (double)(bt_lastval - bt_baseline),
+				(double)SHUTDOWN_PRESS_DELTA_V, (double)SHUTDOWN_RELEASE_DELTA_V,
+				(int)button_was_pressed, (int)will_poweroff);
 		chThdSleepMilliseconds(100);
 	}
 }

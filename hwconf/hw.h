@@ -551,6 +551,10 @@
 #define HW_EARLY_INIT()
 #endif
 
+#ifndef HW_VERY_EARLY_INIT
+#define HW_VERY_EARLY_INIT()
+#endif
+
 // Default ID
 #ifndef HW_DEFAULT_ID
 #define HW_DEFAULT_ID			(APPCONF_CONTROLLER_ID >= 0 ? APPCONF_CONTROLLER_ID : hw_id_from_uuid())
@@ -561,6 +565,24 @@
 #endif
 #ifndef HW_LIM_CURRENT_ABS
 #define HW_LIM_CURRENT_ABS		0.0, 140.0
+#endif
+
+// Limit IMU sample rates to hardware/driver combinations that are tested and
+// keep the configured filtering chain in the intended bandwidth range.
+#if defined(LSM6DSV32X_SPI_DEV)
+#define HW_LIM_IMU_SAMPLE_RATE_HZ	3840
+#elif defined(LSM6DSV32X_USE_SPI)
+#define HW_LIM_IMU_SAMPLE_RATE_HZ	2400
+#elif defined(LSM6DSV32X_SPEED_700KHZ)
+#define HW_LIM_IMU_SAMPLE_RATE_HZ	1200
+#elif defined(LSM6DSV32X_SDA_GPIO)
+#define HW_LIM_IMU_SAMPLE_RATE_HZ	900
+#elif defined(LSM6DS3_USE_SPI)
+#define HW_LIM_IMU_SAMPLE_RATE_HZ 2400
+#elif defined(LSM6DS3_SPEED_700KHZ)
+#define HW_LIM_IMU_SAMPLE_RATE_HZ	1200
+#elif defined(LSM6DS3_SDA_GPIO) || defined(LSM6DS3_NSS_GPIO)
+#define HW_LIM_IMU_SAMPLE_RATE_HZ	900
 #endif
 
 #ifndef HW_LIM_FOC_CTRL_LOOP_FREQ

@@ -23,7 +23,10 @@
 // Software SPI
 
 void spi_bb_init(spi_bb_state *s) {
-	chMtxObjectInit(&s->mutex);
+	if (!s->mutex_init_done) {
+		chMtxObjectInit(&s->mutex);
+		s->mutex_init_done = true;
+	}
 
 	palSetPadMode(s->miso_gpio, s->miso_pin, PAL_MODE_INPUT_PULLUP);
 	palSetPadMode(s->sck_gpio, s->sck_pin, PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_HIGHEST);
@@ -32,8 +35,9 @@ void spi_bb_init(spi_bb_state *s) {
 	if (s->mosi_gpio) {
 		palSetPadMode(s->mosi_gpio, s->mosi_pin, PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_HIGHEST);
 		palSetPad(s->mosi_gpio, s->mosi_pin);
-		palSetPad(s->nss_gpio, s->nss_pin);
 	}
+
+	palSetPad(s->nss_gpio, s->nss_pin);
 }
 
 void spi_bb_deinit(spi_bb_state *s) {
@@ -75,10 +79,9 @@ uint8_t spi_bb_exchange_8(spi_bb_state *s, uint8_t x) {
 	return rx;
 }
 
-
 void spi_bb_transfer_8(
-		spi_bb_state *s, 
-		uint8_t *in_buf, 
+		spi_bb_state *s,
+		uint8_t *in_buf,
 		const uint8_t *out_buf,
 		int length
 		) {
@@ -123,10 +126,62 @@ void spi_bb_transfer_8(
 	}
 }
 
+uint8_t spi_bb_exchange_8_mode_3(spi_bb_state *s, uint8_t x) {
+	uint8_t rx;
+	spi_bb_transfer_8_mode_3(s, &rx, &x, 1);
+	return rx;
+}
+
+void spi_bb_transfer_8_mode_3(
+		spi_bb_state *s,
+		uint8_t *in_buf,
+		const uint8_t *out_buf,
+		int length
+		) {
+	for (int i = 0; i < length; i++) {
+		uint8_t send = out_buf ? out_buf[i] : 0xFF;
+		uint8_t receive = 0;
+
+		for (int bit = 0; bit < 8; bit++) {
+			if(s->mosi_gpio) {
+				palWritePad(s->mosi_gpio, s->mosi_pin, send >> 7);
+				send <<= 1;
+			}
+
+			palClearPad(s->sck_gpio, s->sck_pin);
+			spi_bb_delay_short();
+
+			palSetPad(s->sck_gpio, s->sck_pin);
+			spi_bb_delay_short();
+
+			int samples = 0;
+			samples += palReadPad(s->miso_gpio, s->miso_pin);
+			__NOP();
+			samples += palReadPad(s->miso_gpio, s->miso_pin);
+			__NOP();
+			samples += palReadPad(s->miso_gpio, s->miso_pin);
+			__NOP();
+			samples += palReadPad(s->miso_gpio, s->miso_pin);
+			__NOP();
+			samples += palReadPad(s->miso_gpio, s->miso_pin);
+
+			// 5 samples of each pad read minimize noise.
+			receive <<= 1;
+			if (samples > 2) {
+				receive |= 1;
+			}
+		}
+
+		if (in_buf) {
+			in_buf[i] = receive;
+		}
+	}
+}
+
 void spi_bb_transfer_16(
-		spi_bb_state *s, 
-		uint16_t *in_buf, 
-		const uint16_t *out_buf, 
+		spi_bb_state *s,
+		uint16_t *in_buf,
+		const uint16_t *out_buf,
 		int length
 		) {
 	for (int i = 0; i < length; i++) {
