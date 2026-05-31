@@ -97,6 +97,8 @@ void hw_init_gpio(void) {
 
 	// ShutDown
 	palSetPadMode(HW_SHUTDOWN_GPIO, HW_SHUTDOWN_PIN, PAL_MODE_OUTPUT_OPENDRAIN);
+	// Release open-drain hold line; external pullup keeps the regulator latched.
+	HW_SHUTDOWN_HOLD_ON();
 	palSetPadMode(HW_SHUTDOWN_SENSE_GPIO, HW_SHUTDOWN_SENSE_PIN, PAL_MODE_INPUT_ANALOG);
 
 	// ADC Pins
