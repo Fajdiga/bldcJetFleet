@@ -28,6 +28,9 @@
 #include <string.h>
 
 #define LSM6DSV32X_BURST_READ_LEN	13
+#define LSM6DSV32X_SPI_SYNC_TIMEOUT	MS2ST(2)
+#define LSM6DSV32X_DRDY_TIMEOUT_PERIODS	2
+#define LSM6DSV32X_DRDY_TIMEOUTS_BEFORE_RESET	3
 
 typedef enum {
 	LSM6DSV32X_BUS_I2C,
@@ -71,6 +74,9 @@ static volatile uint32_t m_stat_stream_completed = 0;
 static volatile uint32_t m_stat_stream_copied = 0;
 static volatile uint32_t m_stat_copy_failed = 0;
 static volatile uint32_t m_stat_wait_timeout = 0;
+static volatile uint32_t m_stat_timeout_fallback_ok = 0;
+static volatile uint32_t m_stat_timeout_fallback_fail = 0;
+static volatile uint32_t m_stat_timeout_resets = 0;
 static volatile uint32_t m_stat_recover = 0;
 static volatile uint32_t m_stat_reset_ok = 0;
 static volatile uint32_t m_stat_reset_fail = 0;
@@ -95,17 +101,18 @@ static void spi_error_cb(SPIDriver *spi_dev);
 static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len);
 static void prepare_stream_read(void);
 static bool copy_stream_read(uint8_t *data, int len);
+static void restart_spi_driver(void);
 static void recover_spi_stream(void);
 static bool start_stream_read(bool from_isr);
 
 // SPI mode 3: CPOL = 1, CPHA = 1.
-// Prescaler /8 gives ~5.25 MHz on SPI3 @ 42 MHz APB1.
-// LSM6DSV32X SPI max is 10 MHz, so /8 is safe.
+// Prescaler /4 gives 10.5 MHz on SPI3 @ 42 MHz APB1.
+// Note: this is 5% above the LSM6DSV32X datasheet maximum of 10 MHz.
 static const SPIConfig m_spi_cfg = {
 	.end_cb = spi_end_cb,
 	.ssport = NULL,
 	.sspad = 0,
-	.cr1 = SPI_CR1_BR_1 | SPI_CR1_CPOL | SPI_CR1_CPHA,
+	.cr1 = SPI_CR1_BR_0 | SPI_CR1_CPOL | SPI_CR1_CPHA,
 };
 
 static bool reset_init_lsm6dsv32x(void);
@@ -209,15 +216,20 @@ void lsm6dsv32x_init_spi(SPIDriver *spi_dev, stm32_gpio_t *nss_gpio, int nss_pin
 	m_spi_sync_active = false;
 	m_spi_dma_error = false;
 
+	// Start both semaphores taken on every initialization. This discards a
+	// completion signal left behind by a previous stop/restart cycle.
 	if (!m_drdy_sem_init) {
-		// true = taken, so the thread waits for the first real interrupt.
 		chBSemObjectInit(&m_drdy_sem, true);
 		m_drdy_sem_init = true;
+	} else {
+		chBSemReset(&m_drdy_sem, true);
 	}
 
 	if (!m_spi_sem_init) {
 		chBSemObjectInit(&m_spi_sem, true);
 		m_spi_sem_init = true;
+	} else {
+		chBSemReset(&m_spi_sem, true);
 	}
 
 	palSetPad(m_nss_gpio, m_nss_pin);
@@ -535,6 +547,13 @@ void lsm6dsv32x_stop(void) {
 		m_spi_dev = NULL;
 	}
 
+	if (m_drdy_sem_init) {
+		chBSemReset(&m_drdy_sem, true);
+	}
+	if (m_spi_sem_init) {
+		chBSemReset(&m_spi_sem, true);
+	}
+
 	lsm6dsv32x_thread_ref = NULL;
 	m_spi_stream_enabled = false;
 	m_spi_stream_active = false;
@@ -617,9 +636,14 @@ static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len) {
 	spiStartExchangeI(m_spi_dev, len, txb, rxb);
 	chSysUnlock();
 
-	msg_t msg = chBSemWait(&m_spi_sem);
+	msg_t msg = chBSemWaitTimeout(&m_spi_sem, LSM6DSV32X_SPI_SYNC_TIMEOUT);
 	bool dma_error = m_spi_dma_error;
 	m_spi_dma_error = false;
+
+	if (msg != MSG_OK || dma_error) {
+		restart_spi_driver();
+	}
+
 	spiReleaseBus(m_spi_dev);
 	m_spi_sync_active = false;
 
@@ -630,6 +654,36 @@ static bool spi_transfer(const uint8_t *txb, uint8_t *rxb, size_t len) {
 	}
 
 	return ok;
+}
+
+static void restart_spi_driver(void) {
+	if (m_spi_dev == NULL) {
+		return;
+	}
+
+	/*
+	 * spiStop() only accepts SPI_READY and does not abort SPI_ACTIVE. Stop both
+	 * DMA streams explicitly, clear their pending IRQs, then put the driver in
+	 * READY so the normal stop/start path can release and reallocate them.
+	 */
+	chSysLock();
+	if (m_spi_dev->state != SPI_READY && m_spi_dev->state != SPI_STOP) {
+		dmaStreamDisable(m_spi_dev->dmatx);
+		dmaStreamDisable(m_spi_dev->dmarx);
+		m_spi_dev->spi->CR1 = 0;
+		m_spi_dev->spi->CR2 = 0;
+		m_spi_dev->state = SPI_READY;
+	}
+	chSysUnlock();
+
+	if (m_nss_gpio != NULL) {
+		palSetPad(m_nss_gpio, m_nss_pin);
+	}
+
+	if (m_spi_dev->state != SPI_STOP) {
+		spiStop(m_spi_dev);
+	}
+	spiStart(m_spi_dev, &m_spi_cfg);
 }
 
 static void prepare_stream_read(void) {
@@ -673,14 +727,7 @@ static void recover_spi_stream(void) {
 		chBSemReset(&m_drdy_sem, true);
 	}
 
-	if (m_spi_dev != NULL) {
-		palSetPad(m_nss_gpio, m_nss_pin);
-
-		if (m_spi_dev->state != SPI_READY) {
-			spiStop(m_spi_dev);
-			spiStart(m_spi_dev, &m_spi_cfg);
-		}
-	}
+	restart_spi_driver();
 }
 
 static bool start_stream_read(bool from_isr) {
@@ -958,6 +1005,9 @@ static void terminal_stats(int argc, const char **argv) {
 	uint32_t stream_copied;
 	uint32_t copy_failed;
 	uint32_t wait_timeout;
+	uint32_t timeout_fallback_ok;
+	uint32_t timeout_fallback_fail;
+	uint32_t timeout_resets;
 	uint32_t recover;
 	uint32_t reset_ok;
 	uint32_t reset_fail;
@@ -994,6 +1044,9 @@ static void terminal_stats(int argc, const char **argv) {
 	stream_copied = m_stat_stream_copied;
 	copy_failed = m_stat_copy_failed;
 	wait_timeout = m_stat_wait_timeout;
+	timeout_fallback_ok = m_stat_timeout_fallback_ok;
+	timeout_fallback_fail = m_stat_timeout_fallback_fail;
+	timeout_resets = m_stat_timeout_resets;
 	recover = m_stat_recover;
 	reset_ok = m_stat_reset_ok;
 	reset_fail = m_stat_reset_fail;
@@ -1041,8 +1094,10 @@ static void terminal_stats(int argc, const char **argv) {
 			ignored_active, ignored_complete, ignored_sync, ignored_not_ready, ignored_disabled);
 	commands_printf("  pending latched=%u restart ok=%u fail=%u",
 			pending_latched, pending_restarted, pending_restart_failed);
-	commands_printf("  failures copy=%u timeout=%u recover=%u reset_ok=%u reset_fail=%u sync_fail=%u dma=%u",
-			copy_failed, wait_timeout, recover, reset_ok, reset_fail, sync_failed, dma_errors);
+	commands_printf("  timeout total=%u fallback_ok=%u fallback_fail=%u resets=%u",
+			wait_timeout, timeout_fallback_ok, timeout_fallback_fail, timeout_resets);
+	commands_printf("  failures copy=%u recover=%u reset_ok=%u reset_fail=%u sync_fail=%u dma=%u",
+			copy_failed, recover, reset_ok, reset_fail, sync_failed, dma_errors);
 	commands_printf("  sample_dt_us min=%u max=%u last_age_ms=%u", min_dt_us, max_dt_us, age_ms);
 	commands_printf("  last_raw g=[%d %d %d] a=[%d %d %d]",
 			raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]);
@@ -1068,6 +1123,9 @@ static void reset_stats(void) {
 	m_stat_stream_copied = 0;
 	m_stat_copy_failed = 0;
 	m_stat_wait_timeout = 0;
+	m_stat_timeout_fallback_ok = 0;
+	m_stat_timeout_fallback_fail = 0;
+	m_stat_timeout_resets = 0;
 	m_stat_recover = 0;
 	m_stat_reset_ok = 0;
 	m_stat_reset_fail = 0;
@@ -1094,9 +1152,9 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 	const int local_rate_hz = rate_hz > 0 ? rate_hz : 1;
 	const systime_t desired_interval = US2ST(1000000 / local_rate_hz);
 
-	// Watchdog timeout for INT1 wait: 4x expected sample period, minimum 5 ms.
-	const systime_t int1_timeout =
-			MS2ST(5) > (desired_interval * 4) ? MS2ST(5) : (desired_interval * 4);
+	// Allow one missed edge, then read synchronously to preserve sample flow.
+	const systime_t int1_timeout = desired_interval * LSM6DSV32X_DRDY_TIMEOUT_PERIODS;
+	int consecutive_drdy_timeouts = 0;
 
 	while (!chThdShouldTerminateX()) {
 		uint8_t rxb[12];
@@ -1106,6 +1164,8 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 			msg_t wait_res = chBSemWaitTimeout(&m_drdy_sem, int1_timeout);
 
 			if (wait_res == MSG_OK) {
+				consecutive_drdy_timeouts = 0;
+
 				if (m_bus_mode == LSM6DSV32X_BUS_SPI_HW) {
 					res = copy_stream_read(rxb, 12);
 					bool restart_pending = false;
@@ -1129,6 +1189,24 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 				}
 			} else {
 				m_stat_wait_timeout++;
+				consecutive_drdy_timeouts++;
+
+				if (m_bus_mode == LSM6DSV32X_BUS_SPI_HW &&
+						consecutive_drdy_timeouts < LSM6DSV32X_DRDY_TIMEOUTS_BEFORE_RESET) {
+					/*
+					 * A missing edge should not immediately create a long data gap.
+					 * Read once from the thread; repeated misses still escalate to
+					 * the full SPI and sensor reset below.
+					 */
+					res = read_regs(LSM6DSV32X_OUTX_L_G, rxb, 12);
+					if (res) {
+						m_stat_timeout_fallback_ok++;
+					} else {
+						m_stat_timeout_fallback_fail++;
+					}
+				} else {
+					m_stat_timeout_resets++;
+				}
 			}
 		} else {
 			// Read gyro and accel output registers: 12 bytes starting at OUTX_L_G.
@@ -1144,6 +1222,7 @@ static THD_FUNCTION(lsm6dsv32x_thread, arg) {
 
 			if (reset_init_lsm6dsv32x()) {
 				m_stat_reset_ok++;
+				consecutive_drdy_timeouts = 0;
 				if (m_bus_mode == LSM6DSV32X_BUS_SPI_HW && m_use_int1) {
 					prepare_stream_read();
 					m_spi_stream_enabled = true;

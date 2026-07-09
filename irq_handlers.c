@@ -49,10 +49,15 @@ CH_IRQ_HANDLER(HW_ENC_EXTI_ISR_VEC) {
 
 #ifdef LSM6DSV32X_INT_EXTI_ISR_VEC
 CH_IRQ_HANDLER(LSM6DSV32X_INT_EXTI_ISR_VEC) {
+	CH_IRQ_PROLOGUE();
+
 	if (EXTI_GetITStatus(LSM6DSV32X_INT_EXTI_LINE) != RESET) {
-		lsm6dsv32x_int1_isr();
+		// Clear first so an edge arriving while the ISR starts DMA remains pending.
 		EXTI_ClearITPendingBit(LSM6DSV32X_INT_EXTI_LINE);
+		lsm6dsv32x_int1_isr();
 	}
+
+	CH_IRQ_EPILOGUE();
 }
 #endif
 

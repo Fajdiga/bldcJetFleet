@@ -139,7 +139,8 @@ void hw_init_gpio(void) {
 		EXTI_InitStructure.EXTI_LineCmd = ENABLE;
 		EXTI_Init(&EXTI_InitStructure);
 	}
-	nvicEnableVector(LSM6DSV32X_INT_EXTI_CH, 6);
+	// Keep motor-control ADC/DMA IRQs (priorities 5/6) above the IMU.
+	nvicEnableVector(LSM6DSV32X_INT_EXTI_CH, 7);
 
 	terminal_register_command_callback(
 			"test_button",
