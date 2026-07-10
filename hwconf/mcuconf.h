@@ -154,7 +154,11 @@
  */
 #define STM32_EXT_EXTI0_IRQ_PRIORITY        7
 #define STM32_EXT_EXTI1_IRQ_PRIORITY        7
+#ifdef IMU_DRDY_IRQ_PRIO
+#define STM32_EXT_EXTI2_IRQ_PRIORITY        IMU_DRDY_IRQ_PRIO
+#else
 #define STM32_EXT_EXTI2_IRQ_PRIORITY        7
+#endif
 #define STM32_EXT_EXTI3_IRQ_PRIORITY        7
 #define STM32_EXT_EXTI4_IRQ_PRIORITY        7
 #define STM32_EXT_EXTI5_9_IRQ_PRIORITY      7
@@ -294,8 +298,8 @@
 #define STM32_SERIAL_USE_UART4              TRUE
 #define STM32_SERIAL_USE_UART5              TRUE
 #define STM32_SERIAL_USE_USART6             TRUE
-// NOTE: These are ignored as there is a hack in the chibios UART driver to increase these
-// based on the baud rate.
+// NOTE: The serial LLD normally replaces these with its baud-rate priority.
+// A board can define HW_SERIAL_IRQ_PRIORITY when it needs a fixed hierarchy.
 #define STM32_SERIAL_USART1_PRIORITY        7
 #define STM32_SERIAL_USART2_PRIORITY        7
 #define STM32_SERIAL_USART3_PRIORITY        7

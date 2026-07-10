@@ -40,10 +40,25 @@ typedef struct {
 	bool (*read_sample)(imu_device_t *dev, float accel[3], float gyro[3], float mag[3]);
 
 	// Optional: failure policy, e.g. re-init. (NULL = just retry after a short sleep)
+	// An asynchronous driver must return with its DRDY stream disabled; the shared
+	// worker drains its completion semaphore before launching the replacement DMA.
 	void (*on_read_fail)(imu_device_t *dev);
 
 	// Optional: enable the IMU data-ready signal on its INT pin. (NULL = timed read)
 	void (*enable_drdy_output)(imu_device_t *dev, bool enable);
+
+	// Optional asynchronous sampling contract. It is intended for high-rate devices
+	// whose DMA transaction must begin directly in the data-ready ISR. Drivers that
+	// leave these hooks NULL continue to use the shared thread's synchronous path.
+	bool (*async_supported)(imu_device_t *dev);
+	// from_isr is true for a DRDY launch and false for the worker's asynchronous
+	// timeout fallback. The latter must use the same DMA state machine.
+	bool (*async_start_sample)(imu_device_t *dev, bool from_isr);
+	bool (*async_take_sample)(imu_device_t *dev, float accel[3], float gyro[3], float mag[3]);
+	// Quiesce/repair an expired transfer and return with DRDY streaming disabled.
+	// true means the worker may reset its semaphore and launch a fallback DMA read.
+	bool (*async_timeout)(imu_device_t *dev);
+	void (*async_stop)(imu_device_t *dev);
 } imu_device_interface_t;
 
 struct imu_device {
@@ -59,6 +74,9 @@ struct imu_device {
 	// board wires a DRDY pin and this device routes its data-ready to it). Drivers consult
 	// it in configure() to match their ODR/filter setup to the access mode. false = timed poll.
 	bool use_drdy;
+	// True when the generic IMU worker delegates DRDY sampling to the optional
+	// asynchronous device contract above.
+	bool use_async;
 	void *priv;
 };
 

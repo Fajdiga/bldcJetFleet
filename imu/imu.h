@@ -29,7 +29,12 @@ void imu_init(imu_config *set);
 void imu_reset_orientation(void);
 i2c_bb_state *imu_get_i2c(void);
 void imu_stop(void);
+// Startup convergence only; safety-critical users should also require
+// imu_is_data_fresh() with an application-appropriate maximum age.
 bool imu_startup_done(void);
+uint32_t imu_get_sample_sequence(void);
+float imu_get_sample_age_s(void);
+bool imu_is_data_fresh(float max_age_s);
 float imu_get_roll(void);
 float imu_get_pitch(void);
 float imu_get_yaw(void);

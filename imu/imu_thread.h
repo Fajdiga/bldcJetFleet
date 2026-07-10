@@ -33,4 +33,18 @@ void imu_thread_start(void (*cb)(float *accel, float *gyro, float *mag));
 // Stop the IMU thread and wait for it to exit.
 void imu_thread_stop(void);
 
+// Successful, fully processed sample health. Age is negative until the first
+// sample and sequence resets whenever the active device is changed or stopped.
+uint32_t imu_thread_sample_sequence(void);
+float imu_thread_sample_age_s(void);
+bool imu_thread_data_fresh(float max_age_s);
+
+// Called by the generic EXTI dispatcher. It either launches a device-specific
+// asynchronous DMA sample or signals the normal DRDY semaphore.
+void imu_thread_drdy_isr(void);
+
+// Completion callback registered with the hardware-SPI transport when the
+// active device uses ISR-started DMA sampling.
+void imu_thread_async_complete_isr(void *arg, bool error);
+
 #endif /* IMU_THREAD_H_ */

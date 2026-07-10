@@ -27,7 +27,11 @@
 #include "encoder/encoder.h"
 #include "main.h"
 #include "irq_handlers.h"
-#include "imu/drdy.h"
+#include "imu/imu_thread.h"
+
+#ifndef IMU_DRDY_IRQ_PRIO
+#define IMU_DRDY_IRQ_PRIO 6
+#endif
 
 CH_IRQ_HANDLER(ADC1_2_3_IRQHandler) {
 	CH_IRQ_PROLOGUE();
@@ -39,6 +43,19 @@ CH_IRQ_HANDLER(ADC1_2_3_IRQHandler) {
 void irq_handlers_init(void) {
 	nvicEnableVector(EXTI9_5_IRQn, 6);
 	nvicEnableVector(EXTI15_10_IRQn, 6);
+#ifdef IMU_DRDY_GPIO
+#if IMU_DRDY_PIN == 0
+	nvicEnableVector(EXTI0_IRQn, IMU_DRDY_IRQ_PRIO);
+#elif IMU_DRDY_PIN == 1
+	nvicEnableVector(EXTI1_IRQn, IMU_DRDY_IRQ_PRIO);
+#elif IMU_DRDY_PIN == 2
+	nvicEnableVector(EXTI2_IRQn, IMU_DRDY_IRQ_PRIO);
+#elif IMU_DRDY_PIN == 3
+	nvicEnableVector(EXTI3_IRQn, IMU_DRDY_IRQ_PRIO);
+#elif IMU_DRDY_PIN == 4
+	nvicEnableVector(EXTI4_IRQn, IMU_DRDY_IRQ_PRIO);
+#endif
+#endif
 }
 
 // The STM32 multiplexes EXTI lines 5-9 and 10-15 onto one NVIC vector each. Every GPIO EXTI
@@ -53,10 +70,42 @@ static void exti_gpio_dispatch(void) {
 #ifdef IMU_DRDY_GPIO
 	if (EXTI_GetITStatus(IMU_DRDY_EXTI_LINE) != RESET) {
 		EXTI_ClearITPendingBit(IMU_DRDY_EXTI_LINE);
-		drdy_signal_isr();
+		imu_thread_drdy_isr();
 	}
 #endif
 }
+
+#if defined(IMU_DRDY_GPIO) && IMU_DRDY_PIN == 0
+CH_IRQ_HANDLER(EXTI0_IRQHandler) {
+	CH_IRQ_PROLOGUE();
+	exti_gpio_dispatch();
+	CH_IRQ_EPILOGUE();
+}
+#elif defined(IMU_DRDY_GPIO) && IMU_DRDY_PIN == 1
+CH_IRQ_HANDLER(EXTI1_IRQHandler) {
+	CH_IRQ_PROLOGUE();
+	exti_gpio_dispatch();
+	CH_IRQ_EPILOGUE();
+}
+#elif defined(IMU_DRDY_GPIO) && IMU_DRDY_PIN == 2
+CH_IRQ_HANDLER(EXTI2_IRQHandler) {
+	CH_IRQ_PROLOGUE();
+	exti_gpio_dispatch();
+	CH_IRQ_EPILOGUE();
+}
+#elif defined(IMU_DRDY_GPIO) && IMU_DRDY_PIN == 3
+CH_IRQ_HANDLER(EXTI3_IRQHandler) {
+	CH_IRQ_PROLOGUE();
+	exti_gpio_dispatch();
+	CH_IRQ_EPILOGUE();
+}
+#elif defined(IMU_DRDY_GPIO) && IMU_DRDY_PIN == 4
+CH_IRQ_HANDLER(EXTI4_IRQHandler) {
+	CH_IRQ_PROLOGUE();
+	exti_gpio_dispatch();
+	CH_IRQ_EPILOGUE();
+}
+#endif
 
 CH_IRQ_HANDLER(EXTI9_5_IRQHandler) {
 	CH_IRQ_PROLOGUE();

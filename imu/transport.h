@@ -65,8 +65,30 @@ struct transport {
 			SPIConfig cfg;
 			// DMA buffers, to guarantee their RAM placement (different callers
 			// can have their stack in CCM ram, which is not supported by DMA).
+			// The DRDY path has dedicated buffers so it never writes a register
+			// transaction's buffers while ownership is changing during recovery.
 			uint8_t txd[1 + IMU_MAX_BURST];
 			uint8_t rxd[1 + IMU_MAX_BURST];
+			uint8_t async_txd[1 + IMU_MAX_BURST];
+			uint8_t async_rxd[1 + IMU_MAX_BURST];
+			// Both register IO and the DRDY path use the configured SPI callback.
+			// thread_owned prevents the ISR-started transfer from racing a register
+			// transaction (the SPI mutex alone cannot protect against an ISR).
+			binary_semaphore_t sync_sem;
+			volatile bool thread_owned;
+			volatile bool sync_active;
+			// State for the optional ISR-started DMA read path. Register and async
+			// transactions use their dedicated DMA buffer pairs above.
+			volatile bool async_active;
+			volatile bool async_complete;
+			volatile bool async_error;
+			volatile bool sync_error;
+			volatile uint32_t sync_timeouts;
+			volatile uint32_t sync_dma_errors;
+			volatile uint32_t async_dma_errors;
+			volatile uint32_t spi_resets;
+			void (*async_done_cb)(void *arg, bool error);
+			void *async_done_arg;
 		} spi_hw;
 	} bus;
 };
@@ -86,7 +108,7 @@ static inline void transport_recover(transport_t *t) {
 }
 
 static inline void transport_deinit(transport_t *t) {
-	if (t->interface->deinit) {
+	if (t && t->interface && t->interface->deinit) {
 		t->interface->deinit(t);
 	}
 }

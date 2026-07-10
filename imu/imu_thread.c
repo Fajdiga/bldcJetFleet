@@ -19,6 +19,7 @@
 
 #include "imu_thread.h"
 #include "drdy.h"
+#include "transport_spi_hw.h"
 #include "ch.h"
 #include "terminal.h"
 #include "commands.h"
@@ -37,7 +38,14 @@ static stkalign_t m_wa[THD_WORKING_AREA_SIZE(1024) / sizeof(stkalign_t)];
 static thread_t *m_thd = NULL;
 static imu_device_t *m_dev;
 static volatile uint32_t m_read_fails;
+static volatile uint32_t m_async_wait_timeouts;
+static volatile uint32_t m_async_fallback_wait_timeouts;
+static volatile uint32_t m_sample_sequence;
+static volatile uint32_t m_last_sample_time;
 static bool m_drdy_active = false;
+static bool m_async_active = false;
+static binary_semaphore_t m_async_sem;
+static bool m_async_sem_init = false;
 static void (*m_cb)(float *accel, float *gyro, float *mag);
 static bool m_cmds_registered = false;
 
@@ -86,18 +94,47 @@ static void terminal_status(int argc, const char **argv) {
 			"Transport     : %s\n"
 			"Running       : %s\n"
 			"Sample Rate   : %d Hz\n"
-			"Read fails    : %u",
+			"Sampling      : %s\n"
+			"Read fails    : %u\n"
+			"Async timeouts: %u\n"
+			"Fallback waits: %u",
 			m_dev->transport->interface->name,
 			m_thd ? "yes" : "no",
 			m_dev->sample_rate_hz,
-			m_read_fails);
+			m_async_active ? "DRDY DMA" : (m_drdy_active ? "DRDY" : "timed"),
+			m_read_fails,
+			m_async_wait_timeouts,
+			m_async_fallback_wait_timeouts);
+
+	uint32_t sequence = m_sample_sequence;
+	commands_printf("Samples       : %u", sequence);
+	if (sequence > 0) {
+		commands_printf("Sample age   : %.3f ms",
+				(double)(imu_thread_sample_age_s() * 1000.0f));
+	} else {
+		commands_printf("Sample age   : unavailable");
+	}
 
 	if (m_drdy_active) {
 		commands_printf(
 				"DRDY ints     : %u\n"
 				"DRDY timeouts : %u\n",
 				drdy_interrupt_count(),
-				drdy_timeout_count());
+				m_async_active ? m_async_wait_timeouts : drdy_timeout_count());
+	}
+
+	transport_spi_hw_status_t spi_status;
+	if (transport_spi_hw_get_status(m_dev->transport, &spi_status)) {
+		commands_printf(
+				"SPI state     : %u\n"
+				"SPI owner     : thread=%u sync=%u async=%u complete=%u error=%u\n"
+				"SPI errors    : timeout=%u sync_dma=%u async_dma=%u resets=%u",
+				spi_status.spi_state,
+				spi_status.thread_owned, spi_status.sync_active,
+				spi_status.async_active, spi_status.async_complete,
+				spi_status.async_error, spi_status.sync_timeouts,
+				spi_status.sync_dma_errors, spi_status.async_dma_errors,
+				spi_status.spi_resets);
 	}
 }
 
@@ -105,11 +142,20 @@ void imu_thread_set_device(imu_device_t *dev, uint16_t rate_hz) {
 	m_dev = dev;
 	m_dev->sample_rate_hz = rate_hz;
 	m_read_fails = 0;
+	m_async_wait_timeouts = 0;
+	m_async_fallback_wait_timeouts = 0;
+	m_sample_sequence = 0;
+	m_last_sample_time = 0;
 
 	// Interrupt mode only when both the board wires a DRDY pin and the device can route its
 	// data-ready to it; otherwise the timed loop runs and the hook is never called. Resolved
 	// here (before configure()) so the device's configure() can adapt its ODR/filter setup.
 	dev->use_drdy = drdy_present() && dev->interface->enable_drdy_output != NULL;
+	dev->use_async = dev->use_drdy && dev->interface->async_supported != NULL &&
+			dev->interface->async_start_sample != NULL &&
+			dev->interface->async_take_sample != NULL &&
+			dev->interface->async_timeout != NULL &&
+			dev->interface->async_supported(dev);
 
 	if (!m_cmds_registered) {
 		terminal_register_command_callback(
@@ -128,8 +174,19 @@ void imu_thread_set_device(imu_device_t *dev, uint16_t rate_hz) {
 
 void imu_thread_start(void (*cb)(float *accel, float *gyro, float *mag)) {
 	m_cb = cb;
-
 	m_drdy_active = m_dev->use_drdy;
+	m_async_active = m_dev->use_async;
+
+	if (m_async_active) {
+		if (!m_async_sem_init) {
+			chBSemObjectInit(&m_async_sem, true);
+			m_async_sem_init = true;
+		} else {
+			chBSemReset(&m_async_sem, true);
+		}
+		transport_spi_hw_async_set_callback(m_dev->transport, imu_thread_async_complete_isr, NULL);
+	}
+
 	if (m_drdy_active) {
 		drdy_init();
 		m_dev->interface->enable_drdy_output(m_dev, true);
@@ -139,20 +196,79 @@ void imu_thread_start(void (*cb)(float *accel, float *gyro, float *mag)) {
 }
 
 void imu_thread_stop(void) {
+	// Stop the producer first, then join the consumer before touching its DMA
+	// state. This avoids abort racing a worker already copying or recovering.
+	if (m_dev && m_drdy_active) {
+		drdy_deinit();
+	}
+
+	if (m_dev && m_async_active) {
+		if (m_dev->interface->async_stop) {
+			m_dev->interface->async_stop(m_dev);
+		}
+	}
+
 	if (m_thd) {
 		chThdTerminate(m_thd);
-		drdy_signal(); // unblock a DRDY wait so the thread sees the terminate flag
+		drdy_signal(); // unblock a normal DRDY wait so the thread sees the terminate flag
+		if (m_async_sem_init) {
+			chBSemSignal(&m_async_sem);
+		}
 		chThdWait(m_thd);
 		m_thd = NULL;
 	}
 
+	if (m_dev && m_async_active) {
+		transport_spi_hw_async_abort(m_dev->transport);
+		transport_spi_hw_async_set_callback(m_dev->transport, NULL, NULL);
+	}
+
 	if (m_dev && m_drdy_active) {
 		m_dev->interface->enable_drdy_output(m_dev, false);
-		drdy_deinit();
 	}
 
 	m_dev = NULL;
 	m_drdy_active = false;
+	m_async_active = false;
+	m_sample_sequence = 0;
+	m_last_sample_time = 0;
+}
+
+uint32_t imu_thread_sample_sequence(void) {
+	return m_sample_sequence;
+}
+
+float imu_thread_sample_age_s(void) {
+	if (m_sample_sequence == 0) {
+		return -1.0f;
+	}
+	return (float)(chVTGetSystemTimeX() - m_last_sample_time) /
+			(float)CH_CFG_ST_FREQUENCY;
+}
+
+bool imu_thread_data_fresh(float max_age_s) {
+	float age = imu_thread_sample_age_s();
+	return max_age_s >= 0.0f && age >= 0.0f && age <= max_age_s;
+}
+
+void imu_thread_drdy_isr(void) {
+	if (m_async_active && m_dev && m_dev->interface->async_start_sample) {
+		drdy_note_interrupt_isr();
+		m_dev->interface->async_start_sample(m_dev, true);
+		return;
+	}
+
+	drdy_signal_isr();
+}
+
+void imu_thread_async_complete_isr(void *arg, bool error) {
+	(void)arg;
+	(void)error;
+	if (m_async_sem_init) {
+		chSysLockFromISR();
+		chBSemSignalI(&m_async_sem);
+		chSysUnlockFromISR();
+	}
 }
 
 static THD_FUNCTION(thread_func, arg) {
@@ -165,19 +281,65 @@ static THD_FUNCTION(thread_func, arg) {
 
 	while (!chThdShouldTerminateX()) {
 		systime_t start_time = chVTGetSystemTimeX();
+		float accel[3], gyro[3], mag[3];
+		bool sample_ok;
 
-		if (m_drdy_active) {
-			drdy_wait(DRDY_TIMEOUT_PERIODS * period);
+		if (m_drdy_active && m_async_active) {
+			if (chBSemWaitTimeout(&m_async_sem, DRDY_TIMEOUT_PERIODS * period) == MSG_OK) {
+				if (chThdShouldTerminateX()) {
+					break;
+				}
+				sample_ok = m_dev->interface->async_take_sample(m_dev, accel, gyro, mag);
+			} else {
+				m_async_wait_timeouts++;
+				// First quiesce the old DMA generation, then drain any stale token.
+				// The fallback itself uses the same callback-driven DMA state machine.
+				bool ready = m_dev->interface->async_timeout(m_dev);
+				chBSemReset(&m_async_sem, true);
+				if (chThdShouldTerminateX()) {
+					break;
+				}
+				bool fallback_started = ready &&
+						m_dev->interface->async_start_sample(m_dev, false);
+				if (fallback_started &&
+						chBSemWaitTimeout(&m_async_sem,
+								DRDY_TIMEOUT_PERIODS * period) == MSG_OK) {
+					if (chThdShouldTerminateX()) {
+						break;
+					}
+					sample_ok = m_dev->interface->async_take_sample(
+							m_dev, accel, gyro, mag);
+				} else {
+					if (fallback_started) {
+						m_async_fallback_wait_timeouts++;
+					}
+					sample_ok = false;
+				}
+			}
+		} else {
+			if (m_drdy_active) {
+				drdy_wait(DRDY_TIMEOUT_PERIODS * period);
+				if (chThdShouldTerminateX()) {
+					break;
+				}
+			}
+			sample_ok = m_dev->interface->read_sample(m_dev, accel, gyro, mag);
+		}
+
+		if (!sample_ok) {
 			if (chThdShouldTerminateX()) {
 				break;
 			}
-		}
-
-		float accel[3], gyro[3], mag[3];
-		if (!m_dev->interface->read_sample(m_dev, accel, gyro, mag)) {
 			m_read_fails++;
 			if (m_dev->interface->on_read_fail) {
 				m_dev->interface->on_read_fail(m_dev);
+			}
+			if (m_async_active && m_async_sem_init) {
+				// on_read_fail has quiesced the old generation, so it is now safe
+				// to discard any completion that arrived during recovery. Start the
+				// replacement only after the semaphore is clean.
+				chBSemReset(&m_async_sem, true);
+				m_dev->interface->async_start_sample(m_dev, false);
 			}
 			// Always yield at least a tick so a lightweight on_read_fail can't busy-spin.
 			chThdSleep(1);
@@ -187,8 +349,10 @@ static THD_FUNCTION(thread_func, arg) {
 		if (m_cb) {
 			m_cb(accel, gyro, mag);
 		}
+		m_last_sample_time = chVTGetSystemTimeX();
+		m_sample_sequence++;
 
-		// In DRDY mode the next edge wakes the loop, we only sleep in timed mode
+		// In DRDY mode the next edge wakes the loop, we only sleep in timed mode.
 		if (!m_drdy_active) {
 			systime_t sleep_ticks = 1;
 			systime_t remaining = start_time + interval - chVTGetSystemTimeX();

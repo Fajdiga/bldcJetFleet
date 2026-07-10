@@ -319,7 +319,7 @@ clean:
 # Include the dependency files, should be the last of the makefile
 #
 ifeq ($(OS),Windows_NT)
-  $(shell cmd /C if not exist "$(DEPPATH)" mkdir "$(DEPPATH)")
+  $(shell cmd //C if not exist "$(DEPPATH)" mkdir "$(DEPPATH)")
 else
   $(shell mkdir $(DEPPATH) 2>/dev/null)
 endif

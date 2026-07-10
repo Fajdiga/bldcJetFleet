@@ -48,6 +48,10 @@ void drdy_signal(void);
 // Release a waiter from the EXTI ISR.
 void drdy_signal_isr(void);
 
+// Count an interrupt without waking the synchronous semaphore. This is used
+// by ISR-started DMA paths that wake their worker on DMA completion instead.
+void drdy_note_interrupt_isr(void);
+
 uint32_t drdy_interrupt_count(void);
 uint32_t drdy_timeout_count(void);
 

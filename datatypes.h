@@ -835,7 +835,10 @@ typedef enum {
 	IMU_TYPE_EXTERNAL_MPU9X50,
 	IMU_TYPE_EXTERNAL_ICM20948,
 	IMU_TYPE_EXTERNAL_BMI160,
-	IMU_TYPE_EXTERNAL_LSM6DS3
+	IMU_TYPE_EXTERNAL_LSM6DS3,
+	// Kept at the tail so existing serialized app configurations retain their
+	// established values for all older IMU types.
+	IMU_TYPE_EXTERNAL_LSM6DSV32X
 } IMU_TYPE;
 
 typedef enum {

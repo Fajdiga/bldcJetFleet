@@ -48,6 +48,8 @@ static imu_device_t m_dev;
 static imu_config m_settings;
 static systime_t init_time;
 static bool imu_ready;
+static uint32_t m_last_update_time;
+static bool m_have_update_time;
 static Biquad acc_x_biquad, acc_y_biquad, acc_z_biquad, gyro_x_biquad, gyro_y_biquad, gyro_z_biquad;
 
 // Private functions
@@ -84,6 +86,8 @@ static uint8_t imu_dev_for_external(IMU_TYPE type) {
 		return IMU_DEV_BMI160;
 	case IMU_TYPE_EXTERNAL_LSM6DS3:
 		return IMU_DEV_LSM6DS3;
+	case IMU_TYPE_EXTERNAL_LSM6DSV32X:
+		return IMU_DEV_LSM6DSV32X;
 	case IMU_TYPE_OFF:
 	case IMU_TYPE_INTERNAL:
 		break;
@@ -187,7 +191,11 @@ void imu_init(imu_config *set) {
 
 	if (dev != IMU_DEV_NONE) {
 		m_dev = imu_device_create(dev, com, &m_transport);
-		uint16_t rate_hz = MIN(m_settings.sample_rate_hz, transport_max_sample_rate(&m_transport));
+		uint16_t requested_rate = m_settings.sample_rate_hz;
+#ifdef HW_LIM_IMU_SAMPLE_RATE_HZ
+		requested_rate = MIN(requested_rate, HW_LIM_IMU_SAMPLE_RATE_HZ);
+#endif
+		uint16_t rate_hz = MIN(requested_rate, transport_max_sample_rate(&m_transport));
 		imu_thread_set_device(&m_dev, rate_hz);
 		bool configured = m_dev.interface->configure(&m_dev, m_settings.filter, m_settings.use_magnetometer);
 
@@ -200,7 +208,7 @@ void imu_init(imu_config *set) {
 			imu_fallback_transport_init();
 			com = IMU_FALLBACK_COM;
 			m_dev = imu_device_create(dev, com, &m_transport);
-			rate_hz = MIN(m_settings.sample_rate_hz, transport_max_sample_rate(&m_transport));
+			rate_hz = MIN(requested_rate, transport_max_sample_rate(&m_transport));
 			imu_thread_set_device(&m_dev, rate_hz);
 			configured = m_dev.interface->configure(&m_dev, m_settings.filter, m_settings.use_magnetometer);
 		}
@@ -215,6 +223,8 @@ void imu_init(imu_config *set) {
 
 void imu_reset_orientation(void) {
 	imu_ready = false;
+	m_last_update_time = 0;
+	m_have_update_time = false;
 	init_time = chVTGetSystemTimeX();
 	ahrs_init_attitude_info(&m_att);
 	FusionAhrsInitialise(&m_fusionAhrs, 10.0, 1.0);
@@ -227,14 +237,28 @@ i2c_bb_state *imu_get_i2c(void) {
 
 void imu_stop(void) {
 	imu_thread_stop();
-
-#if IMU_COM == IMU_COM_SPI_HW
-	spiStop(&IMU_SPI_DEV);
-#endif
+	transport_deinit(&m_transport);
+	memset(&m_transport, 0, sizeof(m_transport));
+	memset(&m_dev, 0, sizeof(m_dev));
+	imu_ready = false;
+	m_last_update_time = 0;
+	m_have_update_time = false;
 }
 
 bool imu_startup_done(void) {
 	return imu_ready;
+}
+
+uint32_t imu_get_sample_sequence(void) {
+	return imu_thread_sample_sequence();
+}
+
+float imu_get_sample_age_s(void) {
+	return imu_thread_sample_age_s();
+}
+
+bool imu_is_data_fresh(float max_age_s) {
+	return imu_thread_data_fresh(max_age_s);
 }
 
 float imu_get_roll(void) {
@@ -448,12 +472,11 @@ void imu_set_read_callback(void (*func)(float *acc, float *gyro, float *mag, flo
 }
 
 static void imu_read_callback(float *accel, float *gyro, float *mag) {
-	static uint32_t last_time = 0;
-
-	chSysLock();
-	float dt = timer_seconds_elapsed_since(last_time);
-	last_time = timer_time_now();
-	chSysUnlock();
+	uint32_t now = timer_time_now();
+	float dt = m_have_update_time ? timer_calc_diff(m_last_update_time, now) :
+			(m_dev.sample_rate_hz > 0 ? 1.0f / (float)m_dev.sample_rate_hz : 0.001f);
+	m_last_update_time = now;
+	m_have_update_time = true;
 
 	if (!imu_ready && ST2MS(chVTGetSystemTimeX() - init_time) > 1000) {
 		ahrs_update_all_parameters(

@@ -31,6 +31,7 @@
 //   #define IMU_SPI_DEV / IMU_SPI_AF                       (hardware SPI only)
 //   #define IMU_I2C_SDA_GPIO/_PIN, _SCL_                   (I2C transport)
 //   #define IMU_BUS_SPEED_HZ                               (optional bus clock in Hz; 0/unset = transport default)
+//   #define IMU_ASYNC_DMA                                   (optional, only for a driver that supports ISR-started DMA)
 //
 // A board may also declare a fallback transport that imu_init switches to when the
 // IMU does not answer on the primary bus (e.g. SPI on new hardware, I2C on old). It

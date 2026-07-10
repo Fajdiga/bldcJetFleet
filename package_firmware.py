@@ -104,6 +104,7 @@ package_dict["Lightning400"] = [['Lightning400', default_name]]
 package_dict["JetFleetF6_20s"] = [['JetFleetF6_20s', default_name]]
 package_dict["JetFleetF6_24s"] = [['JetFleetF6_24s', default_name]]
 package_dict["JetFleetF6_32s"] = [['JetFleetF6_32s', default_name]]
+package_dict["JetFleetG18_40s"] = [['JetFleetG18_40s', default_name]]
 package_dict["GESC"] = [['gesc', default_name]]
 package_dict["Warrior6"] = [['warrior6', default_name]]
 package_dict["Raiden7"] = [['raiden7', default_name]]
@@ -300,4 +301,3 @@ for directory in package_dict:
 # Print the QRC file
 with open(os.path.join(package_dir, 'res_fw.qrc'), 'w') as f:
     print(resource_xml_stub_string.replace("REPLACEABLE_STRING", res_string[:-1]), file=f)
-

@@ -427,7 +427,11 @@ void sd_lld_start(SerialDriver *sdp, const SerialConfig *config) {
   if (config == NULL)
     config = &default_config;
 
+#ifdef HW_SERIAL_IRQ_PRIORITY
+  uint32_t prio = HW_SERIAL_IRQ_PRIORITY;
+#else
   uint32_t prio = config->speed > 200000 ? 4 : 7;
+#endif
 
   if (sdp->state == SD_STOP) {
 #if STM32_SERIAL_USE_USART1
