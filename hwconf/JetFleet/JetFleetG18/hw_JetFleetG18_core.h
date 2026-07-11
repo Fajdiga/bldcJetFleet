@@ -300,6 +300,9 @@
 #ifndef MCCONF_FOC_DT_US
 #define MCCONF_FOC_DT_US				0.0		// No deadtime compensation (fast 35ns gate drivers)
 #endif
+#ifndef MCCONF_FOC_PHASE_FILTER_ENABLE
+#define MCCONF_FOC_PHASE_FILTER_ENABLE	false	// GaN stage: modulation × bus-voltage model is more accurate
+#endif
 #ifndef MCCONF_L_MIN_DUTY
 #define MCCONF_L_MIN_DUTY				0.0		// No minimum duty limit
 #endif
