@@ -94,7 +94,8 @@
 // Position 5: Additional temps
 #define ADC_IND_TEMP_MOS_2		12
 #define ADC_IND_TEMP_MOS_3		13
-// Position 6: Unused
+// Position 6: VREFINT (ADC1 only) - internal reference; real VDD = 1.21 / (adc/4095)
+#define ADC_IND_VREFINT			15
 
 // ====================================================================================
 // Current/Voltage Sensing
@@ -114,6 +115,10 @@
 #endif
 
 #define GET_INPUT_VOLTAGE()		((V_REG / 4095.0) * (float)ADC_Value[ADC_IND_VIN_SENS] * ((VIN_R1 + VIN_R2) / VIN_R2))
+
+// Actual MCU VDD from the internal 1.21V reference. TSVREFE is enabled by the
+// ADC driver (mcpwm_foc/mcpwm) before hw_setup_adc_channels() runs.
+#define GET_MCU_VOLTAGE()		(1.21 / ((float)ADC_Value[ADC_IND_VREFINT] / 4095.0))
 
 
 // ====================================================================================

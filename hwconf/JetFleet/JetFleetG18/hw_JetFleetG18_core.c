@@ -48,6 +48,7 @@ static const I2CConfig i2cfg = {
 
 // Private functions
 static void terminal_button_test(int argc, const char **argv);
+static void terminal_mcu_volt(int argc, const char **argv);
 
 void hw_init_gpio(void) {
 
@@ -135,6 +136,12 @@ void hw_init_gpio(void) {
 			"Try sampling the shutdown button",
 			0,
 			terminal_button_test);
+
+	terminal_register_command_callback(
+			"mcu_volt",
+			"Show MCU VDD measured from the internal VREFINT reference",
+			0,
+			terminal_mcu_volt);
 }
 
 void hw_setup_adc_channels(void) {
@@ -144,7 +151,7 @@ void hw_setup_adc_channels(void) {
 	ADC_RegularChannelConfig(ADC1, ADC_Channel_5, 3, ADC_SampleTime_15Cycles);    // EXT (PA5)
 	ADC_RegularChannelConfig(ADC1, ADC_Channel_14, 4, ADC_SampleTime_15Cycles);   // TEMP_MOTOR (PC4)
 	ADC_RegularChannelConfig(ADC1, ADC_Channel_8, 5, ADC_SampleTime_15Cycles);    // TEMP_MOS_2 (PB0)
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_0, 6, ADC_SampleTime_15Cycles);    // dummy
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_Vrefint, 6, ADC_SampleTime_15Cycles);   // VREFINT (index 15)
 
 	// ADC2 regular channels
 	ADC_RegularChannelConfig(ADC2, ADC_Channel_11, 1, ADC_SampleTime_15Cycles);   // CURR2
@@ -386,6 +393,18 @@ static void terminal_button_test(int argc, const char **argv) {
 				(double)bt_baseline, (double)(bt_lastval - bt_baseline),
 				(double)SHUTDOWN_PRESS_DELTA_V, (double)SHUTDOWN_RELEASE_DELTA_V,
 				(int)button_was_pressed, (int)will_poweroff);
+		chThdSleepMilliseconds(100);
+	}
+}
+
+static void terminal_mcu_volt(int argc, const char **argv) {
+	(void)argc;
+	(void)argv;
+
+	// Sample for 1s so the reading can be checked for stability under load.
+	for (int i = 0;i < 10;i++) {
+		commands_printf("MCU VDD: %.3f V   (VREFINT ADC: %u)",
+				(double)GET_MCU_VOLTAGE(), (unsigned)ADC_Value[ADC_IND_VREFINT]);
 		chThdSleepMilliseconds(100);
 	}
 }
