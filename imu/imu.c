@@ -473,8 +473,13 @@ void imu_set_read_callback(void (*func)(float *acc, float *gyro, float *mag, flo
 
 static void imu_read_callback(float *accel, float *gyro, float *mag) {
 	uint32_t now = timer_time_now();
-	float dt = m_have_update_time ? timer_calc_diff(m_last_update_time, now) :
-			(m_dev.sample_rate_hz > 0 ? 1.0f / (float)m_dev.sample_rate_hz : 0.001f);
+	// Use the programmed sample period as a clean, constant dt for the AHRS
+	// integrators (Madgwick/Mahony/Fusion). The measured timer_calc_diff() is
+	// quantized to the 10 kHz system tick (100 us) — about 2.6 ticks per sample
+	// at 3840 Hz — so the per-sample measurement is mostly quantization noise.
+	// A constant 1/ODR is a cleaner integration step than that noisy value.
+	// (m_last_update_time is still tracked for a possible windowed measurement.)
+	float dt = m_dev.sample_rate_hz > 0 ? 1.0f / (float)m_dev.sample_rate_hz : 0.001f;
 	m_last_update_time = now;
 	m_have_update_time = true;
 
