@@ -27,7 +27,7 @@
 #include "encoder/encoder.h"
 #include "main.h"
 #include "irq_handlers.h"
-#include "imu/drdy.h"
+#include "imu/imu_thread.h"
 
 CH_IRQ_HANDLER(ADC1_2_3_IRQHandler) {
 	CH_IRQ_PROLOGUE();
@@ -39,6 +39,10 @@ CH_IRQ_HANDLER(ADC1_2_3_IRQHandler) {
 void irq_handlers_init(void) {
 	nvicEnableVector(EXTI9_5_IRQn, 6);
 	nvicEnableVector(EXTI15_10_IRQn, 6);
+#if defined(IMU_DRDY_GPIO) && IMU_DRDY_PIN == 2
+	// A dedicated vector for EXTI line 2, which is not covered by the 5-9 / 10-15 groups.
+	nvicEnableVector(EXTI2_IRQn, 6);
+#endif
 }
 
 // The STM32 multiplexes EXTI lines 5-9 and 10-15 onto one NVIC vector each. Every GPIO EXTI
@@ -53,7 +57,7 @@ static void exti_gpio_dispatch(void) {
 #ifdef IMU_DRDY_GPIO
 	if (EXTI_GetITStatus(IMU_DRDY_EXTI_LINE) != RESET) {
 		EXTI_ClearITPendingBit(IMU_DRDY_EXTI_LINE);
-		drdy_signal_isr();
+		imu_thread_drdy_isr();
 	}
 #endif
 }
@@ -69,6 +73,14 @@ CH_IRQ_HANDLER(EXTI15_10_IRQHandler) {
 	exti_gpio_dispatch();
 	CH_IRQ_EPILOGUE();
 }
+
+#if defined(IMU_DRDY_GPIO) && IMU_DRDY_PIN == 2
+CH_IRQ_HANDLER(EXTI2_IRQHandler) {
+	CH_IRQ_PROLOGUE();
+	exti_gpio_dispatch();
+	CH_IRQ_EPILOGUE();
+}
+#endif
 
 CH_IRQ_HANDLER(HW_ENC_TIM_ISR_VEC) {
 	if (TIM_GetITStatus(HW_ENC_TIM, TIM_IT_Update) != RESET) {
