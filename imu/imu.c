@@ -186,7 +186,11 @@ void imu_init(imu_config *set) {
 
 	if (dev != IMU_DEV_NONE) {
 		m_dev = imu_device_create(dev, com, &m_transport);
-		uint16_t rate_hz = MIN(m_settings.sample_rate_hz, transport_max_sample_rate(&m_transport));
+		uint16_t requested_rate = m_settings.sample_rate_hz;
+#ifdef HW_LIM_IMU_SAMPLE_RATE_HZ
+		requested_rate = MIN(requested_rate, HW_LIM_IMU_SAMPLE_RATE_HZ);
+#endif
+		uint16_t rate_hz = MIN(requested_rate, transport_max_sample_rate(&m_transport));
 		imu_thread_set_device(&m_dev, rate_hz);
 		bool configured = m_dev.interface->configure(&m_dev, m_settings.filter, m_settings.use_magnetometer);
 
@@ -196,10 +200,11 @@ void imu_init(imu_config *set) {
 			// same IMU to a different bus, so re-bind to the fallback transport
 			// and try once more.
 			commands_printf("IMU: no response on primary bus, trying fallback");
+			transport_deinit(&m_transport);
 			imu_fallback_transport_init();
 			com = IMU_FALLBACK_COM;
 			m_dev = imu_device_create(dev, com, &m_transport);
-			rate_hz = MIN(m_settings.sample_rate_hz, transport_max_sample_rate(&m_transport));
+			rate_hz = MIN(requested_rate, transport_max_sample_rate(&m_transport));
 			imu_thread_set_device(&m_dev, rate_hz);
 			configured = m_dev.interface->configure(&m_dev, m_settings.filter, m_settings.use_magnetometer);
 		}
@@ -226,10 +231,10 @@ i2c_bb_state *imu_get_i2c(void) {
 
 void imu_stop(void) {
 	imu_thread_stop();
-
-#if IMU_COM == IMU_COM_SPI_HW
-	spiStop(&IMU_SPI_DEV);
-#endif
+	transport_deinit(&m_transport);
+	memset(&m_transport, 0, sizeof(m_transport));
+	memset(&m_dev, 0, sizeof(m_dev));
+	imu_ready = false;
 }
 
 bool imu_startup_done(void) {
@@ -447,9 +452,8 @@ void imu_set_read_callback(void (*func)(float *acc, float *gyro, float *mag, flo
 }
 
 static void imu_read_callback(float *accel, float *gyro, float *mag) {
-	// Use the device's effective sample period as a constant AHRS integration step. The 10 kHz
-	// system tick quantizes a measured interval to 100 us, a large fraction of the period at the
-	// highest data rates, so the per-sample measurement is mostly quantization noise.
+	// Use the sensor's effective output period. This avoids injecting scheduler
+	// and OS-tick timing jitter into the AHRS integration step.
 	float dt = 1.0f / (float)m_dev.sample_rate_hz;
 
 	if (!imu_ready && ST2MS(chVTGetSystemTimeX() - init_time) > 1000) {
