@@ -18,6 +18,8 @@
 	*/
 
 #include "lsm6dsv32x.h"
+#include "imu_config.h"
+#include "transport_spi_hw.h"
 #include "commands.h"
 
 /*
@@ -91,6 +93,9 @@ static const struct { uint16_t hz; uint8_t code; } odr_ladder[] = {
 	{480, 0x8}, {960, 0x9}, {1920, 0xA}, {3840, 0xB}, {7680, 0xC},
 };
 #define ODR_LADDER_N (sizeof(odr_ladder) / sizeof(odr_ladder[0]))
+
+// One gyro/accel sample is 12 bytes starting at REG_OUTX_L_G (gyro X/Y/Z then accel X/Y/Z).
+#define ASYNC_BURST_LEN		12
 
 static bool read_reg(imu_device_t *dev, uint8_t reg, uint8_t *res) {
 	return transport_read_reg(dev->transport, dev->dev_addr, reg, res, 1);
@@ -183,24 +188,70 @@ static bool configure(imu_device_t *dev, IMU_FILTER filter, bool use_mag) {
 	return true;
 }
 
-static bool read_sample(imu_device_t *dev, float accel[3], float gyro[3], float mag[3]) {
-	uint8_t rxb[12];
-	if (!transport_read_reg(dev->transport, dev->dev_addr, REG_OUTX_L_G, rxb, 12)) {
-		return false;
-	}
-
-	gyro[0] = (int16_t)(rxb[1] << 8 | rxb[0]) * GYRO_DPS_PER_LSB;
-	gyro[1] = (int16_t)(rxb[3] << 8 | rxb[2]) * GYRO_DPS_PER_LSB;
-	gyro[2] = (int16_t)(rxb[5] << 8 | rxb[4]) * GYRO_DPS_PER_LSB;
-	accel[0] = (int16_t)(rxb[7] << 8 | rxb[6]) * ACCEL_G_PER_LSB;
-	accel[1] = (int16_t)(rxb[9] << 8 | rxb[8]) * ACCEL_G_PER_LSB;
-	accel[2] = (int16_t)(rxb[11] << 8 | rxb[10]) * ACCEL_G_PER_LSB;
+// Decode one 12-byte gyro/accel burst into engineering units. Shared by the synchronous
+// read and the asynchronous DMA completion path.
+static bool decode_sample(const uint8_t raw[ASYNC_BURST_LEN],
+		float accel[3], float gyro[3], float mag[3]) {
+	gyro[0] = (int16_t)(raw[1] << 8 | raw[0]) * GYRO_DPS_PER_LSB;
+	gyro[1] = (int16_t)(raw[3] << 8 | raw[2]) * GYRO_DPS_PER_LSB;
+	gyro[2] = (int16_t)(raw[5] << 8 | raw[4]) * GYRO_DPS_PER_LSB;
+	accel[0] = (int16_t)(raw[7] << 8 | raw[6]) * ACCEL_G_PER_LSB;
+	accel[1] = (int16_t)(raw[9] << 8 | raw[8]) * ACCEL_G_PER_LSB;
+	accel[2] = (int16_t)(raw[11] << 8 | raw[10]) * ACCEL_G_PER_LSB;
 
 	// 6-axis part: no magnetometer. The AHRS ignores mag unless use_magnetometer is set,
 	// which must not be enabled for this device.
 	mag[0] = 0; mag[1] = 0; mag[2] = 0;
-
 	return true;
+}
+
+static bool read_sample(imu_device_t *dev, float accel[3], float gyro[3], float mag[3]) {
+	uint8_t rxb[ASYNC_BURST_LEN];
+	if (!transport_read_reg(dev->transport, dev->dev_addr, REG_OUTX_L_G, rxb, sizeof(rxb))) {
+		return false;
+	}
+	return decode_sample(rxb, accel, gyro, mag);
+}
+
+// Asynchronous sampling: optional, only for boards that wire the LSM6DSV32X to hardware SPI
+// with a data-ready pin and opt in with IMU_ASYNC_DMA.
+static bool async_supported(imu_device_t *dev) {
+#if defined(IMU_ASYNC_DMA) && IMU_ASYNC_DMA && (IMU_COM == IMU_COM_SPI_HW) && defined(IMU_DRDY_PIN)
+	return transport_spi_hw_async_supported(dev->transport);
+#else
+	(void)dev;
+	return false;
+#endif
+}
+
+// Start one DMA burst from either the data-ready ISR or the worker's timeout fallback.
+// Returns false if another transfer still owns the bus.
+static bool async_start_sample(imu_device_t *dev, bool from_isr) {
+	return transport_spi_hw_async_start_read(
+			dev->transport, REG_OUTX_L_G, ASYNC_BURST_LEN, from_isr);
+}
+
+// Called from the worker after DMA completion: copy and decode the completed burst.
+static bool async_take_sample(imu_device_t *dev, float accel[3], float gyro[3], float mag[3]) {
+	uint8_t raw[ASYNC_BURST_LEN];
+	if (!transport_spi_hw_async_copy_read(dev->transport, raw, sizeof(raw))) {
+		return false;
+	}
+	return decode_sample(raw, accel, gyro, mag);
+}
+
+static bool async_timeout(imu_device_t *dev) {
+	transport_spi_hw_async_abort(dev->transport);
+	return true;
+}
+
+static void on_read_fail(imu_device_t *dev) {
+	transport_recover(dev->transport);
+}
+
+// The transport aborts the in-flight transfer on shutdown; the driver holds no async state.
+static void async_stop(imu_device_t *dev) {
+	(void)dev;
 }
 
 static void enable_drdy_output(imu_device_t *dev, bool enable) {
@@ -211,8 +262,13 @@ static const imu_device_interface_t lsm6dsv32x_interface = {
 	.name = "LSM6DSV32X",
 	.configure = configure,
 	.read_sample = read_sample,
-	.on_read_fail = NULL,
+	.on_read_fail = on_read_fail,
 	.enable_drdy_output = enable_drdy_output,
+	.async_supported = async_supported,
+	.async_start_sample = async_start_sample,
+	.async_take_sample = async_take_sample,
+	.async_timeout = async_timeout,
+	.async_stop = async_stop,
 };
 
 imu_device_t lsm6dsv32x_device(transport_t *transport) {
