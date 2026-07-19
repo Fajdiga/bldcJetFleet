@@ -22,7 +22,6 @@
 #include "imu_config.h"
 #include "mpu9150.h"
 #include "ahrs.h"
-#include "timer.h"
 #include "commands.h"
 #include "icm20948.h"
 #include "bmi160_wrapper.h"
@@ -448,12 +447,10 @@ void imu_set_read_callback(void (*func)(float *acc, float *gyro, float *mag, flo
 }
 
 static void imu_read_callback(float *accel, float *gyro, float *mag) {
-	static uint32_t last_time = 0;
-
-	chSysLock();
-	float dt = timer_seconds_elapsed_since(last_time);
-	last_time = timer_time_now();
-	chSysUnlock();
+	// Use the device's effective sample period as a constant AHRS integration step. The 10 kHz
+	// system tick quantizes a measured interval to 100 us, a large fraction of the period at the
+	// highest data rates, so the per-sample measurement is mostly quantization noise.
+	float dt = 1.0f / (float)m_dev.sample_rate_hz;
 
 	if (!imu_ready && ST2MS(chVTGetSystemTimeX() - init_time) > 1000) {
 		ahrs_update_all_parameters(
