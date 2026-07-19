@@ -44,6 +44,16 @@ typedef struct {
 
 	// Optional: enable the IMU data-ready signal on its INT pin. (NULL = timed read)
 	void (*enable_drdy_output)(imu_device_t *dev, bool enable);
+
+	// Optional asynchronous sampling. When present and supported, the read loop launches a
+	// transfer from the data-ready ISR and decodes the completed sample in thread context
+	// instead of reading synchronously. NULL on either side keeps the synchronous path.
+	bool (*async_supported)(imu_device_t *dev);
+	bool (*async_start_sample)(imu_device_t *dev, bool from_isr);
+	bool (*async_take_sample)(imu_device_t *dev, float accel[3], float gyro[3], float mag[3]);
+	// Recover a transfer that did not complete within the worker's deadline.
+	bool (*async_timeout)(imu_device_t *dev);
+	void (*async_stop)(imu_device_t *dev);
 } imu_device_interface_t;
 
 struct imu_device {
@@ -59,6 +69,9 @@ struct imu_device {
 	// board wires a DRDY pin and this device routes its data-ready to it). Drivers consult
 	// it in configure() to match their ODR/filter setup to the access mode. false = timed poll.
 	bool use_drdy;
+	// Resolved in imu_thread_set_device(): true when the read loop delegates sampling to the
+	// optional asynchronous contract above. Drivers consult it in configure() / enable_drdy_output().
+	bool use_async;
 	void *priv;
 };
 

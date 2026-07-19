@@ -81,12 +81,16 @@ void drdy_signal(void) {
 }
 
 void drdy_signal_isr(void) {
-	m_int_count++;
+	drdy_note_interrupt_isr();
 	chSysLockFromISR();
 	if (m_sem_ready) {
 		chBSemSignalI(&m_sem);
 	}
 	chSysUnlockFromISR();
+}
+
+void drdy_note_interrupt_isr(void) {
+	m_int_count++;
 }
 
 uint32_t drdy_interrupt_count(void) {
@@ -118,6 +122,9 @@ void drdy_signal(void) {
 }
 
 void drdy_signal_isr(void) {
+}
+
+void drdy_note_interrupt_isr(void) {
 }
 
 uint32_t drdy_interrupt_count(void) {

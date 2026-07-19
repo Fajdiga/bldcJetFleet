@@ -33,4 +33,12 @@ void imu_thread_start(void (*cb)(float *accel, float *gyro, float *mag));
 // Stop the IMU thread and wait for it to exit.
 void imu_thread_stop(void);
 
+// Called by the EXTI data-ready dispatcher. Launches a device's asynchronous sample when the
+// active device uses async sampling, otherwise signals the normal data-ready semaphore.
+void imu_thread_drdy_isr(void);
+
+// Completion callback registered with the transport when the active device samples via
+// ISR-started DMA. Signalled from the SPI DMA ISR to wake the worker.
+void imu_thread_async_complete_isr(void *arg, bool error);
+
 #endif /* IMU_THREAD_H_ */

@@ -19,6 +19,7 @@
 
 #include "imu_thread.h"
 #include "drdy.h"
+#include "transport_spi_hw.h"
 #include "ch.h"
 #include "terminal.h"
 #include "commands.h"
@@ -37,7 +38,11 @@ static stkalign_t m_wa[THD_WORKING_AREA_SIZE(1024) / sizeof(stkalign_t)];
 static thread_t *m_thd = NULL;
 static imu_device_t *m_dev;
 static volatile uint32_t m_read_fails;
+static volatile uint32_t m_async_wait_timeouts;
 static bool m_drdy_active = false;
+static bool m_async_active = false;
+static binary_semaphore_t m_async_sem;
+static bool m_async_sem_init = false;
 static void (*m_cb)(float *accel, float *gyro, float *mag);
 static bool m_cmds_registered = false;
 
@@ -91,11 +96,14 @@ static void terminal_status(int argc, const char **argv) {
 			m_thd ? "yes" : "no",
 			m_dev->sample_rate_hz,
 			m_read_fails);
+	if (m_async_active) {
+		commands_printf("DMA timeouts  : %u", m_async_wait_timeouts);
+	}
 
 	if (m_drdy_active) {
 		commands_printf(
 				"DRDY ints     : %u\n"
-				"DRDY timeouts : %u\n",
+				"DRDY timeouts : %u",
 				drdy_interrupt_count(),
 				drdy_timeout_count());
 	}
@@ -105,11 +113,20 @@ void imu_thread_set_device(imu_device_t *dev, uint16_t rate_hz) {
 	m_dev = dev;
 	m_dev->sample_rate_hz = rate_hz;
 	m_read_fails = 0;
+	m_async_wait_timeouts = 0;
 
 	// Interrupt mode only when both the board wires a DRDY pin and the device can route its
 	// data-ready to it; otherwise the timed loop runs and the hook is never called. Resolved
 	// here (before configure()) so the device's configure() can adapt its ODR/filter setup.
 	dev->use_drdy = drdy_present() && dev->interface->enable_drdy_output != NULL;
+	// Asynchronous sampling additionally requires the device to offer the async contract.
+	dev->use_async = dev->use_drdy &&
+			dev->interface->async_supported != NULL &&
+			dev->interface->async_start_sample != NULL &&
+			dev->interface->async_take_sample != NULL &&
+			dev->interface->async_timeout != NULL &&
+			dev->interface->async_stop != NULL &&
+			dev->interface->async_supported(dev);
 
 	if (!m_cmds_registered) {
 		terminal_register_command_callback(
@@ -130,6 +147,18 @@ void imu_thread_start(void (*cb)(float *accel, float *gyro, float *mag)) {
 	m_cb = cb;
 
 	m_drdy_active = m_dev->use_drdy;
+	m_async_active = m_dev->use_async;
+
+	if (m_async_active) {
+		if (!m_async_sem_init) {
+			chBSemObjectInit(&m_async_sem, true);
+			m_async_sem_init = true;
+		} else {
+			chBSemReset(&m_async_sem, true);
+		}
+		transport_spi_hw_async_set_callback(m_dev->transport, imu_thread_async_complete_isr, NULL);
+	}
+
 	if (m_drdy_active) {
 		drdy_init();
 		m_dev->interface->enable_drdy_output(m_dev, true);
@@ -139,20 +168,61 @@ void imu_thread_start(void (*cb)(float *accel, float *gyro, float *mag)) {
 }
 
 void imu_thread_stop(void) {
+	// Mask the MCU-side producer first. Disabling the sensor output is a synchronous SPI
+	// transaction, so it must wait until the worker and any asynchronous transfer are gone.
+	if (m_dev && m_drdy_active) {
+		drdy_deinit();
+	}
+
+	if (m_dev && m_async_active) {
+		if (m_dev->interface->async_stop) {
+			m_dev->interface->async_stop(m_dev);
+		}
+	}
+
 	if (m_thd) {
 		chThdTerminate(m_thd);
-		drdy_signal(); // unblock a DRDY wait so the thread sees the terminate flag
+		drdy_signal(); // unblock a normal DRDY wait so the thread sees the terminate flag
+		if (m_async_sem_init) {
+			chBSemSignal(&m_async_sem); // unblock an asynchronous wait
+		}
 		chThdWait(m_thd);
 		m_thd = NULL;
 	}
 
+	if (m_dev && m_async_active) {
+		transport_spi_hw_async_abort(m_dev->transport);
+		transport_spi_hw_async_set_callback(m_dev->transport, NULL, NULL);
+	}
+
 	if (m_dev && m_drdy_active) {
 		m_dev->interface->enable_drdy_output(m_dev, false);
-		drdy_deinit();
 	}
 
 	m_dev = NULL;
 	m_drdy_active = false;
+	m_async_active = false;
+}
+
+void imu_thread_drdy_isr(void) {
+	if (m_async_active && m_dev && m_dev->interface->async_start_sample) {
+		drdy_note_interrupt_isr();
+		m_dev->interface->async_start_sample(m_dev, true);
+		return;
+	}
+
+	drdy_signal_isr();
+}
+
+void imu_thread_async_complete_isr(void *arg, bool error) {
+	(void)arg;
+	(void)error;
+
+	if (m_async_sem_init) {
+		chSysLockFromISR();
+		chBSemSignalI(&m_async_sem);
+		chSysUnlockFromISR();
+	}
 }
 
 static THD_FUNCTION(thread_func, arg) {
@@ -165,19 +235,66 @@ static THD_FUNCTION(thread_func, arg) {
 
 	while (!chThdShouldTerminateX()) {
 		systime_t start_time = chVTGetSystemTimeX();
+		float accel[3], gyro[3], mag[3];
+		bool sample_ok;
 
-		if (m_drdy_active) {
-			drdy_wait(DRDY_TIMEOUT_PERIODS * period);
+		if (m_async_active) {
+			// Bound both the data-ready wait and DMA completion wait. On timeout, reset the
+			// peripheral and launch one transfer from thread context so a missed edge cannot
+			// permanently stop sampling.
+			msg_t wait_result = chBSemWaitTimeout(
+					&m_async_sem, DRDY_TIMEOUT_PERIODS * period);
 			if (chThdShouldTerminateX()) {
 				break;
 			}
+
+			if (wait_result == MSG_OK) {
+				sample_ok = m_dev->interface->async_take_sample(m_dev, accel, gyro, mag);
+			} else {
+				m_async_wait_timeouts++;
+				bool recovered = m_dev->interface->async_timeout(m_dev);
+				chBSemReset(&m_async_sem, true);
+				if (chThdShouldTerminateX()) {
+					break;
+				}
+
+				bool fallback_started = recovered &&
+						m_dev->interface->async_start_sample(m_dev, false);
+				msg_t fallback_result = fallback_started ? chBSemWaitTimeout(
+						&m_async_sem, DRDY_TIMEOUT_PERIODS * period) : MSG_TIMEOUT;
+				if (chThdShouldTerminateX()) {
+					break;
+				}
+				if (fallback_result == MSG_OK) {
+					sample_ok = m_dev->interface->async_take_sample(
+							m_dev, accel, gyro, mag);
+				} else {
+					sample_ok = false;
+				}
+			}
+		} else {
+			if (m_drdy_active) {
+				drdy_wait(DRDY_TIMEOUT_PERIODS * period);
+				if (chThdShouldTerminateX()) {
+					break;
+				}
+			}
+			sample_ok = m_dev->interface->read_sample(m_dev, accel, gyro, mag);
 		}
 
-		float accel[3], gyro[3], mag[3];
-		if (!m_dev->interface->read_sample(m_dev, accel, gyro, mag)) {
+		if (!sample_ok) {
+			if (chThdShouldTerminateX()) {
+				break;
+			}
 			m_read_fails++;
 			if (m_dev->interface->on_read_fail) {
 				m_dev->interface->on_read_fail(m_dev);
+			}
+			if (m_async_active && m_async_sem_init) {
+				// Recovery has quiesced the old generation. Drain a stale completion
+				// token, then immediately arm a replacement read from thread context.
+				chBSemReset(&m_async_sem, true);
+				m_dev->interface->async_start_sample(m_dev, false);
 			}
 			// Always yield at least a tick so a lightweight on_read_fail can't busy-spin.
 			chThdSleep(1);
@@ -188,7 +305,7 @@ static THD_FUNCTION(thread_func, arg) {
 			m_cb(accel, gyro, mag);
 		}
 
-		// In DRDY mode the next edge wakes the loop, we only sleep in timed mode
+		// In DRDY/async mode the next edge wakes the loop, we only sleep in timed mode.
 		if (!m_drdy_active) {
 			systime_t sleep_ticks = 1;
 			systime_t remaining = start_time + interval - chVTGetSystemTimeX();
