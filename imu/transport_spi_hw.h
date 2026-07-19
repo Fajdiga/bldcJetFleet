@@ -30,4 +30,18 @@ void transport_spi_hw_init(transport_t *t, SPIDriver *spid, uint32_t af,
 		stm32_gpio_t *mosi_gpio, uint8_t mosi_pin, stm32_gpio_t *miso_gpio, uint8_t miso_pin,
 		uint32_t bus_hz);
 
+// Optional ISR-started DMA burst support. It is exposed only by the hardware-SPI
+// transport; bit-banged and I2C transports keep their synchronous register API.
+// transport_spi_hw_async_start_read can be called from either the data-ready ISR or
+// thread context and begins a full-duplex DMA read of len bytes from reg; the registered
+// callback is invoked from the SPI DMA ISR on completion. async_copy_read copies a clean
+// completed read.
+// async_abort stops an in-flight transfer for orderly shutdown.
+bool transport_spi_hw_async_supported(transport_t *t);
+void transport_spi_hw_async_set_callback(transport_t *t,
+		void (*callback)(void *arg, bool error), void *arg);
+bool transport_spi_hw_async_start_read(transport_t *t, uint8_t reg, size_t len, bool from_isr);
+bool transport_spi_hw_async_copy_read(transport_t *t, uint8_t *rx, size_t len);
+void transport_spi_hw_async_abort(transport_t *t);
+
 #endif /* IMU_TRANSPORT_SPI_HW_H_ */

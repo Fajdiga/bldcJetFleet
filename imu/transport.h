@@ -67,6 +67,23 @@ struct transport {
 			// can have their stack in CCM ram, which is not supported by DMA).
 			uint8_t txd[1 + IMU_MAX_BURST];
 			uint8_t rxd[1 + IMU_MAX_BURST];
+			// Dedicated buffers for the optional ISR-started read, so a register
+			// transaction never overwrites a burst that is in flight.
+			uint8_t async_txd[1 + IMU_MAX_BURST];
+			uint8_t async_rxd[1 + IMU_MAX_BURST];
+			// thread_owned extends the SPI mutex's ownership to the data-ready
+			// ISR, which bypasses the mutex to start an asynchronous transfer.
+			binary_semaphore_t sync_sem;
+			volatile bool thread_owned;
+			volatile bool sync_active;
+			volatile bool async_active;
+			volatile bool async_complete;
+			volatile bool async_error;
+			volatile bool sync_error;
+			// Completion callback for a driver that reads samples via ISR-started
+			// DMA. Invoked from the SPI DMA ISR.
+			void (*async_done_cb)(void *arg, bool error);
+			void *async_done_arg;
 		} spi_hw;
 	} bus;
 };
@@ -86,7 +103,7 @@ static inline void transport_recover(transport_t *t) {
 }
 
 static inline void transport_deinit(transport_t *t) {
-	if (t->interface->deinit) {
+	if (t && t->interface && t->interface->deinit) {
 		t->interface->deinit(t);
 	}
 }
