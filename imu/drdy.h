@@ -25,6 +25,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+typedef void (*drdy_isr_callback_t)(void *arg);
+
 // Generic data-ready (DRDY) EXTI source. A board opts in by defining IMU_DRDY_GPIO and the rest
 // of the IMU_DRDY_* macros (pin, EXTI line/port-src/pin-src). With none defined every function
 // below is an inert stub and drdy_present() is false, so the IMU thread stays in its timed loop.
@@ -47,6 +49,10 @@ void drdy_signal(void);
 
 // Release a waiter from the EXTI ISR.
 void drdy_signal_isr(void);
+
+// Register the optional device hook invoked from the EXTI ISR before the
+// generic semaphore is signalled.
+void drdy_set_isr_callback(drdy_isr_callback_t cb, void *arg);
 
 // TIM5 timestamp of the latest data-ready edge, captured in the ISR. Only meaningful after
 // drdy_wait() returned true. Returns 0 when absent.

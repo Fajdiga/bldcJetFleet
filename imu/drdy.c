@@ -31,6 +31,8 @@ static volatile bool m_sem_ready = false;
 static volatile uint32_t m_timestamp;
 static volatile uint32_t m_int_count;
 static volatile uint32_t m_timeout_count;
+static drdy_isr_callback_t m_isr_callback;
+static void *m_isr_arg;
 
 bool drdy_present(void) {
 	return true;
@@ -66,6 +68,7 @@ void drdy_deinit(void) {
 	exti.EXTI_Trigger = EXTI_Trigger_Rising;
 	exti.EXTI_LineCmd = DISABLE;
 	EXTI_Init(&exti);
+	EXTI_ClearITPendingBit(IMU_DRDY_EXTI_LINE);
 }
 
 bool drdy_wait(systime_t timeout) {
@@ -85,11 +88,19 @@ void drdy_signal(void) {
 void drdy_signal_isr(void) {
 	m_timestamp = timer_time_now();
 	m_int_count++;
+	if (m_isr_callback) {
+		m_isr_callback(m_isr_arg);
+	}
 	chSysLockFromISR();
 	if (m_sem_ready) {
 		chBSemSignalI(&m_sem);
 	}
 	chSysUnlockFromISR();
+}
+
+void drdy_set_isr_callback(drdy_isr_callback_t cb, void *arg) {
+	m_isr_callback = cb;
+	m_isr_arg = arg;
 }
 
 uint32_t drdy_timestamp(void) {
@@ -125,6 +136,11 @@ void drdy_signal(void) {
 }
 
 void drdy_signal_isr(void) {
+}
+
+void drdy_set_isr_callback(drdy_isr_callback_t cb, void *arg) {
+	(void)cb;
+	(void)arg;
 }
 
 uint32_t drdy_timestamp(void) {

@@ -63,10 +63,17 @@ struct transport {
 		struct {
 			SPIDriver *spid;
 			SPIConfig cfg;
-			// DMA buffers, to guarantee their RAM placement (different callers
-			// can have their stack in CCM ram, which is not supported by DMA).
+			// Dedicated buffers keep synchronous accesses from changing an
+			// ISR-started DMA transfer.
 			uint8_t txd[1 + IMU_MAX_BURST];
 			uint8_t rxd[1 + IMU_MAX_BURST];
+			uint8_t async_txd[1 + IMU_MAX_BURST];
+			uint8_t async_rxd[1 + IMU_MAX_BURST];
+			binary_semaphore_t async_sem;
+			volatile bool async_active;
+			volatile bool async_complete;
+			volatile bool async_error;
+			volatile bool thread_owned;
 		} spi_hw;
 	} bus;
 };

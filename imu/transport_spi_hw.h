@@ -30,4 +30,18 @@ void transport_spi_hw_init(transport_t *t, SPIDriver *spid, uint32_t af,
 		stm32_gpio_t *mosi_gpio, uint8_t mosi_pin, stm32_gpio_t *miso_gpio, uint8_t miso_pin,
 		uint32_t bus_hz);
 
+// Start a register read using the hardware SPI DMA engine. The ISR variant is
+// safe to call from a DRDY EXTI handler; the thread variant is for restarting a
+// latched transfer after the previous sample has been copied.
+bool transport_spi_hw_async_start_isr(transport_t *t, uint8_t reg, size_t len);
+bool transport_spi_hw_async_start(transport_t *t, uint8_t reg, size_t len);
+
+// Wait for the active DMA transfer, copy its payload, and release the async
+// slot. This is called from the IMU thread, never from an ISR.
+bool transport_spi_hw_async_read(transport_t *t, uint8_t *rx, size_t len, systime_t timeout);
+
+bool transport_spi_hw_async_busy(transport_t *t);
+bool transport_spi_hw_async_active(transport_t *t);
+void transport_spi_hw_async_abort(transport_t *t);
+
 #endif /* IMU_TRANSPORT_SPI_HW_H_ */

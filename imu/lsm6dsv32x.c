@@ -19,6 +19,9 @@
 
 #include "lsm6dsv32x.h"
 #include "commands.h"
+#include "drdy.h"
+#include "hw.h"
+#include "transport_spi_hw.h"
 
 /*
  * Anti-alias low-pass cutoffs at different IMU_FILTER values:
@@ -58,6 +61,9 @@
 #define REG_OUTX_L_G			0x22 // gyro X/Y/Z then accel X/Y/Z (12 bytes)
 
 #define WHO_AM_I_VAL			0x70
+
+#define SAMPLE_BURST_LEN		12
+#define ASYNC_READ_TIMEOUT	MS2ST(2)
 
 #define CTRL3_BDU				(1 << 6)
 #define CTRL3_IF_INC			(1 << 2)
@@ -100,8 +106,46 @@ static bool write_reg(imu_device_t *dev, uint8_t reg, uint8_t value) {
 	return transport_write_reg(dev->transport, dev->dev_addr, reg, &value, 1);
 }
 
+#ifdef IMU_ASYNC_DMA
+static volatile bool m_async_enabled;
+static volatile bool m_async_pending;
+static volatile uint32_t m_active_timestamp;
+static volatile uint32_t m_pending_timestamp;
+static IMU_FILTER m_filter;
+
+static void on_drdy_isr(imu_device_t *dev) {
+	if (!m_async_enabled) {
+		return;
+	}
+	uint32_t timestamp = drdy_timestamp();
+
+	if (transport_spi_hw_async_start_isr(dev->transport, REG_OUTX_L_G, SAMPLE_BURST_LEN)) {
+		m_active_timestamp = timestamp;
+		return;
+	}
+
+	// A second edge while the current DMA transfer is active or complete is
+	// retained as one pending sample. The thread restarts it immediately after
+	// copying the current payload; the binary DRDY semaphore already coalesces
+	// the corresponding wakeup.
+	if (transport_spi_hw_async_busy(dev->transport)) {
+		m_async_pending = true;
+		m_pending_timestamp = timestamp;
+	}
+}
+
+static void stop_async(imu_device_t *dev) {
+	m_async_enabled = m_async_pending = false;
+	transport_spi_hw_async_abort(dev->transport);
+}
+#endif
+
 static bool configure(imu_device_t *dev, IMU_FILTER filter, bool use_mag) {
 	(void)use_mag; // 6-axis part, no magnetometer
+#ifdef IMU_ASYNC_DMA
+	m_async_enabled = m_async_pending = false;
+	m_filter = filter;
+#endif
 
 	uint8_t id = 0;
 	dev->dev_addr = LSM6DSV32X_ADDR_A;
@@ -153,7 +197,8 @@ static bool configure(imu_device_t *dev, IMU_FILTER filter, bool use_mag) {
 		}
 	}
 
-	// Block data update + register auto-increment.
+	// Disable DRDY while applying the complete configuration.
+	ok = ok && write_reg(dev, REG_INT1_CTRL, 0);
 	ok = ok && write_reg(dev, REG_CTRL3, CTRL3_BDU | CTRL3_IF_INC);
 
 	// Accelerometer: Full scale + LPF2 low-pass anti-alias filter.
@@ -184,10 +229,54 @@ static bool configure(imu_device_t *dev, IMU_FILTER filter, bool use_mag) {
 }
 
 static bool read_sample(imu_device_t *dev, float accel[3], float gyro[3], float mag[3]) {
-	uint8_t rxb[12];
-	if (!transport_read_reg(dev->transport, dev->dev_addr, REG_OUTX_L_G, rxb, 12)) {
+	uint8_t rxb[SAMPLE_BURST_LEN];
+	bool read_ok;
+#ifdef IMU_ASYNC_DMA
+	bool async_read = dev->use_drdy && transport_spi_hw_async_busy(dev->transport);
+	uint32_t async_timestamp = m_active_timestamp;
+	if (async_read) {
+		read_ok = transport_spi_hw_async_read(dev->transport, rxb, SAMPLE_BURST_LEN,
+				ASYNC_READ_TIMEOUT);
+	} else {
+		read_ok = transport_read_reg(dev->transport, dev->dev_addr, REG_OUTX_L_G,
+				rxb, SAMPLE_BURST_LEN);
+	}
+#else
+	read_ok = transport_read_reg(dev->transport, dev->dev_addr, REG_OUTX_L_G,
+			rxb, SAMPLE_BURST_LEN);
+#endif
+	if (!read_ok) {
 		return false;
 	}
+
+#ifdef IMU_ASYNC_DMA
+	if (async_read) {
+		dev->sample_timestamp = async_timestamp;
+	}
+
+	if (dev->use_drdy && m_async_enabled) {
+		bool restart = false;
+		uint32_t timestamp = 0;
+		chSysLock();
+		restart = m_async_pending;
+		timestamp = m_pending_timestamp;
+		m_async_pending = false;
+		chSysUnlock();
+		if (restart) {
+			bool started = transport_spi_hw_async_start(dev->transport,
+					REG_OUTX_L_G, SAMPLE_BURST_LEN);
+			if (started) {
+				m_active_timestamp = timestamp;
+			}
+			if (started || transport_spi_hw_async_busy(dev->transport)) {
+				// The pending edge was not consumed by the current wakeup.
+				// Preserve it for the next loop iteration after the new DMA
+				// transfer completes.
+				drdy_signal();
+			}
+		}
+	}
+#endif
 
 	gyro[0] = (int16_t)(rxb[1] << 8 | rxb[0]) * GYRO_DPS_PER_LSB;
 	gyro[1] = (int16_t)(rxb[3] << 8 | rxb[2]) * GYRO_DPS_PER_LSB;
@@ -204,15 +293,46 @@ static bool read_sample(imu_device_t *dev, float accel[3], float gyro[3], float 
 }
 
 static void enable_drdy_output(imu_device_t *dev, bool enable) {
+#ifdef IMU_ASYNC_DMA
+	m_async_enabled = m_async_pending = false;
+	m_async_enabled = write_reg(dev, REG_INT1_CTRL, enable ? INT1_DRDY_G : 0) && enable;
+#else
 	write_reg(dev, REG_INT1_CTRL, enable ? INT1_DRDY_G : 0);
+#endif
 }
+
+#ifdef IMU_ASYNC_DMA
+static void on_read_fail(imu_device_t *dev) {
+	stop_async(dev);
+	if (configure(dev, m_filter, false) && dev->use_drdy) {
+		enable_drdy_output(dev, true);
+	}
+}
+#endif
 
 static const imu_device_interface_t lsm6dsv32x_interface = {
 	.name = "LSM6DSV32X",
 	.configure = configure,
 	.read_sample = read_sample,
-	.on_read_fail = NULL,
+	.on_read_fail =
+#ifdef IMU_ASYNC_DMA
+		on_read_fail,
+#else
+		NULL,
+#endif
 	.enable_drdy_output = enable_drdy_output,
+	.on_drdy_isr =
+#ifdef IMU_ASYNC_DMA
+		on_drdy_isr,
+#else
+		NULL,
+#endif
+	.stop_async =
+#ifdef IMU_ASYNC_DMA
+		stop_async,
+#else
+		NULL,
+#endif
 };
 
 imu_device_t lsm6dsv32x_device(transport_t *transport) {

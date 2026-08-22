@@ -44,6 +44,14 @@ typedef struct {
 
 	// Optional: enable the IMU data-ready signal on its INT pin. (NULL = timed read)
 	void (*enable_drdy_output)(imu_device_t *dev, bool enable);
+
+	// Optional: called directly from the DRDY EXTI ISR. The hook must only use
+	// ISR-safe operations; normal devices leave it NULL.
+	void (*on_drdy_isr)(imu_device_t *dev);
+
+	// Optional: stop an ISR-started transfer before the device is reconfigured or
+	// its transport is deinitialized.
+	void (*stop_async)(imu_device_t *dev);
 } imu_device_interface_t;
 
 struct imu_device {
@@ -55,6 +63,7 @@ struct imu_device {
 	// Sample rate (Hz) the read loop runs at. Set by imu_thread_set_device(); a device's
 	// configure() may override it with the effective rate it actually programmed.
 	uint16_t sample_rate_hz;
+	uint32_t sample_timestamp;
 	// Resolved in imu_thread_set_device(): true when the read loop will be DRDY-driven (the
 	// board wires a DRDY pin and this device routes its data-ready to it). Drivers consult
 	// it in configure() to match their ODR/filter setup to the access mode. false = timed poll.

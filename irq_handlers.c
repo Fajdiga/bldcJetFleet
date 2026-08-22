@@ -29,6 +29,10 @@
 #include "irq_handlers.h"
 #include "imu/drdy.h"
 
+#ifndef IMU_DRDY_IRQ_PRIO
+#define IMU_DRDY_IRQ_PRIO 7
+#endif
+
 CH_IRQ_HANDLER(ADC1_2_3_IRQHandler) {
 	CH_IRQ_PROLOGUE();
 	ADC_ClearITPendingBit(ADC1, ADC_IT_JEOC);
@@ -39,6 +43,11 @@ CH_IRQ_HANDLER(ADC1_2_3_IRQHandler) {
 void irq_handlers_init(void) {
 	nvicEnableVector(EXTI9_5_IRQn, 6);
 	nvicEnableVector(EXTI15_10_IRQn, 6);
+#ifdef IMU_DRDY_GPIO
+#ifdef IMU_DRDY_EXTI_CH
+	nvicEnableVector(IMU_DRDY_EXTI_CH, IMU_DRDY_IRQ_PRIO);
+#endif
+#endif
 
 	// Latch supply dips below the PVD threshold into crash_info: a sag that resets
 	// nothing is otherwise invisible, and one latched right before a reset is
@@ -86,6 +95,19 @@ CH_IRQ_HANDLER(EXTI15_10_IRQHandler) {
 	exti_gpio_dispatch();
 	CH_IRQ_EPILOGUE();
 }
+
+#ifdef IMU_DRDY_GPIO
+#ifdef IMU_DRDY_EXTI_ISR_VEC
+CH_IRQ_HANDLER(IMU_DRDY_EXTI_ISR_VEC) {
+	CH_IRQ_PROLOGUE();
+	if (EXTI_GetITStatus(IMU_DRDY_EXTI_LINE) != RESET) {
+		EXTI_ClearITPendingBit(IMU_DRDY_EXTI_LINE);
+		drdy_signal_isr();
+	}
+	CH_IRQ_EPILOGUE();
+}
+#endif
+#endif
 
 CH_IRQ_HANDLER(HW_ENC_TIM_ISR_VEC) {
 	if (TIM_GetITStatus(HW_ENC_TIM, TIM_IT_Update) != RESET) {

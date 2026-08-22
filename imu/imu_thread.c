@@ -70,6 +70,13 @@ static void terminal_read_reg(int argc, const char **argv) {
 	}
 }
 
+static void drdy_device_isr(void *arg) {
+	imu_device_t *dev = (imu_device_t *)arg;
+	if (dev && dev->interface->on_drdy_isr) {
+		dev->interface->on_drdy_isr(dev);
+	}
+}
+
 static void terminal_status(int argc, const char **argv) {
 	(void)argc;
 	(void)argv;
@@ -111,6 +118,8 @@ void imu_thread_set_device(imu_device_t *dev, uint16_t rate_hz) {
 	// data-ready to it; otherwise the timed loop runs and the hook is never called. Resolved
 	// here (before configure()) so the device's configure() can adapt its ODR/filter setup.
 	dev->use_drdy = drdy_present() && dev->interface->enable_drdy_output != NULL;
+	drdy_set_isr_callback(dev->use_drdy && dev->interface->on_drdy_isr ?
+			drdy_device_isr : NULL, dev);
 
 	if (!m_cmds_registered) {
 		terminal_register_command_callback(
@@ -143,13 +152,23 @@ void imu_thread_stop(void) {
 	if (m_thd) {
 		chThdTerminate(m_thd);
 		drdy_signal(); // unblock a DRDY wait so the thread sees the terminate flag
+	}
+
+	if (m_dev && m_drdy_active) {
+		drdy_deinit();
+	}
+	drdy_set_isr_callback(NULL, NULL);
+
+	if (m_thd) {
 		chThdWait(m_thd);
 		m_thd = NULL;
 	}
 
 	if (m_dev && m_drdy_active) {
+		if (m_dev->interface->stop_async) {
+			m_dev->interface->stop_async(m_dev);
+		}
 		m_dev->interface->enable_drdy_output(m_dev, false);
-		drdy_deinit();
 	}
 
 	m_dev = NULL;
@@ -178,10 +197,14 @@ static THD_FUNCTION(thread_func, arg) {
 		}
 
 		uint32_t ts = drdy ? drdy_timestamp() : timer_time_now();
+		m_dev->sample_timestamp = ts;
 
 		float accel[3], gyro[3], mag[3];
 		if (!m_dev->interface->read_sample(m_dev, accel, gyro, mag)) {
 			m_read_fails++;
+			if (chThdShouldTerminateX()) {
+				break;
+			}
 			if (m_dev->interface->on_read_fail) {
 				m_dev->interface->on_read_fail(m_dev);
 			}
@@ -189,6 +212,7 @@ static THD_FUNCTION(thread_func, arg) {
 			chThdSleep(1);
 			continue;
 		}
+		ts = m_dev->sample_timestamp;
 
 		// An edge stamp can be older than the previous iteration's timeout-fallback stamp
 		// (edge fired right after the timeout expired), keep dt from wrapping to negative.
