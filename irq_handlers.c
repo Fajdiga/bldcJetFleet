@@ -39,6 +39,9 @@ CH_IRQ_HANDLER(ADC1_2_3_IRQHandler) {
 void irq_handlers_init(void) {
 	nvicEnableVector(EXTI9_5_IRQn, 6);
 	nvicEnableVector(EXTI15_10_IRQn, 6);
+#if defined(IMU_DRDY_PIN) && IMU_DRDY_PIN == 2
+	nvicEnableVector(EXTI2_IRQn, 6);
+#endif
 
 	// Latch supply dips below the PVD threshold into crash_info: a sag that resets
 	// nothing is otherwise invisible, and one latched right before a reset is
@@ -81,6 +84,14 @@ CH_IRQ_HANDLER(EXTI15_10_IRQHandler) {
 	exti_gpio_dispatch();
 	CH_IRQ_EPILOGUE();
 }
+
+#if defined(IMU_DRDY_PIN) && IMU_DRDY_PIN == 2
+CH_IRQ_HANDLER(EXTI2_IRQHandler) {
+	CH_IRQ_PROLOGUE();
+	drdy_exti_dispatch();
+	CH_IRQ_EPILOGUE();
+}
+#endif
 
 CH_IRQ_HANDLER(HW_ENC_TIM_ISR_VEC) {
 	if (TIM_GetITStatus(HW_ENC_TIM, TIM_IT_Update) != RESET) {
