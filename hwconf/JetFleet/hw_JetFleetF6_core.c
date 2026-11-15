@@ -46,7 +46,25 @@ void buzzer_init(void) {
 // Private functions
 static void terminal_button_test(int argc, const char **argv);
 
+/**
+ * Enable the brown-out reset at level 3 (about 2.8 V). Without it the MCU is
+ * only reset below about 1.8 V, so it keeps running, and can hang, when the
+ * 3.3 V supply dips but does not go away completely. That happens when the
+ * button is pressed while the board is powering down.
+ *
+ * The level is stored in the option bytes, so this only writes once.
+ */
+static void brown_out_reset_init(void) {
+	if (FLASH_OB_GetBOR() != OB_BOR_LEVEL3) {
+		FLASH_OB_Unlock();
+		FLASH_OB_BORConfig(OB_BOR_LEVEL3);
+		FLASH_OB_Launch();
+		FLASH_OB_Lock();
+	}
+}
+
 void hw_init_gpio(void) {
+	brown_out_reset_init();
 	
 	// GPIO clock enable
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
