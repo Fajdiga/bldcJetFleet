@@ -55,7 +55,8 @@
     #define HW_SHUTDOWN_SENSE_GPIO		GPIOC
     #define HW_SHUTDOWN_SENSE_PIN		5
     #define HW_SHUTDOWN_HOLD_ON()		palSetPad(HW_SHUTDOWN_GPIO, HW_SHUTDOWN_PIN)
-    #define HW_SHUTDOWN_HOLD_OFF()		palClearPad(HW_SHUTDOWN_GPIO, HW_SHUTDOWN_PIN)
+    #define HW_SHUTDOWN_HOLD_OFF()		hw_shutdown_hold_off()
+    #define HW_SHUTDOWN_NO	// In always off mode the board follows a latching switch
     #define HW_SAMPLE_SHUTDOWN()		hw_sample_shutdown_button()
     
     // ADC Config
@@ -256,6 +257,7 @@
     // Functions
     float hw_JetFleet_get_temp(void);
     bool hw_sample_shutdown_button(void);
+    void hw_shutdown_hold_off(void);
     void buzzer_init(void);
     
     #define HW_EARLY_INIT()    buzzer_init()

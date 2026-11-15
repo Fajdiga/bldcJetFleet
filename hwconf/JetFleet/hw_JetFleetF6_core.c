@@ -28,6 +28,7 @@
 #include "commands.h"
 #include "mc_interface.h"
 #include "shutdown.h"
+#include "app.h"
 
 #define EXT_BUZZER_ON()    palSetPad(HW_ICU_GPIO, HW_ICU_PIN)
 #define EXT_BUZZER_OFF()   palClearPad(HW_ICU_GPIO, HW_ICU_PIN)
@@ -191,45 +192,120 @@ void hw_stop_i2c(void) {
 void hw_try_restore_i2c(void) {
 }
 
-#define SHUTDOWN_BEEP_TIME_S		0.3
+#define BT_HOLD_TIME_S			0.5		// Hold time to power off when stopped
+#define BT_HOLD_TIME_SPINNING_S	3.0		// Hold time to power off when spinning
+#define BT_ERPM_THRESHOLD		100.0
+#define BT_REQUEST_TIME_S		3.0		// Must outlast the 0.7 s vote in shutdown.c
+#define BT_BEEP_TIME_S			0.3
+
+/*
+ * Power button
+ *
+ * The button is a digital input: high when pressed, low when released. The
+ * hold pin overrides the button: pulling it low cuts the power even when the
+ * button is pressed, and the power then comes straight back when the MCU
+ * resets and lets go of the pin. The hold pin must therefore only be pulled
+ * low while the button is released.
+ */
+
+static bool button_pressed(void) {
+	return palReadPad(HW_SHUTDOWN_SENSE_GPIO, HW_SHUTDOWN_SENSE_PIN) == PAL_HIGH;
+}
+
+static bool hold_is_off(void) {
+	return (palReadLatch(HW_SHUTDOWN_GPIO) & (1U << HW_SHUTDOWN_PIN)) == 0;
+}
 
 /**
- * The power button is a plain digital input: high when pressed, low when
- * released. Return true when it is released and false when it is pressed and
- * leave everything else (filtering, shutdown modes, saving data, releasing the
- * hold pin) to the common shutdown thread in shutdown.c.
+ * Cut the power, unless the button is pressed. In that case the shutdown is
+ * skipped and the board stays on.
+ */
+void hw_shutdown_hold_off(void) {
+	if (!button_pressed()) {
+		palClearPad(HW_SHUTDOWN_GPIO, HW_SHUTDOWN_PIN);
+	}
+}
+
+/**
+ * hw_sample_shutdown_button - sampled by the shutdown thread in shutdown.c
  *
- * The press that powers the board on is not seen as a shutdown request, as
- * the shutdown thread only reacts when this goes from true to false.
+ * Always off mode is for a latching switch: return the switch state. The
+ * shutdown thread keeps the board on while it is closed and shuts down when
+ * it opens.
  *
- * The buzzer sounds once the shutdown thread has released the hold pin while
- * the button is still down, to tell the user that the button can be let go.
+ * All other modes are for a push button: return false when shutdown is
+ * requested, true otherwise.
+ * - The press that powered the board on is ignored until it is released.
+ * - Holding the button for 0.5 s (3 s when the motor is spinning) arms the
+ *   shutdown and sounds the buzzer. Shutdown is requested on release.
+ * - Pressing the button again before the power is cut cancels the request.
  */
 bool hw_sample_shutdown_button(void) {
-	static bool beep_done = false;
+	static bool boot_released = false;
+	static bool was_pressed = false;
+	static bool armed = false;
+	static bool off_request = false;
 	static bool beep_active = false;
+	static systime_t press_time = 0;
+	static systime_t request_time = 0;
 	static systime_t beep_start = 0;
 
-	bool pressed = palReadPad(HW_SHUTDOWN_SENSE_GPIO, HW_SHUTDOWN_SENSE_PIN) == PAL_HIGH;
-	bool hold_off = (palReadLatch(HW_SHUTDOWN_GPIO) & (1U << HW_SHUTDOWN_PIN)) == 0;
+	bool pressed = button_pressed();
 
-	if (pressed && hold_off) {
-		if (!beep_done) {
-			beep_done = true;
+	// The power was cut and the button was pressed before it went away. Take
+	// the hold back so that the board stays on instead of browning out.
+	if (pressed && hold_is_off()) {
+		HW_SHUTDOWN_HOLD_ON();
+	}
+
+	if (app_get_configuration()->shutdown_mode == SHUTDOWN_MODE_ALWAYS_OFF) {
+		return pressed;
+	}
+
+	if (!boot_released) {
+		boot_released = !pressed;
+		return true;
+	}
+
+	if (pressed) {
+		off_request = false;
+
+		if (!was_pressed) {
+			press_time = chVTGetSystemTimeX();
+			armed = false;
+		}
+
+		bool spinning = fabsf(mc_interface_get_rpm()) > BT_ERPM_THRESHOLD;
+		if (!armed && UTILS_AGE_S(press_time) >
+				(spinning ? BT_HOLD_TIME_SPINNING_S : BT_HOLD_TIME_S)) {
+			// Let the user know that the button can be released now
+			armed = true;
 			beep_active = true;
 			beep_start = chVTGetSystemTimeX();
 			EXT_BUZZER_ON();
 		}
 	} else {
-		beep_done = false;
+		if (was_pressed && armed) {
+			off_request = true;
+			request_time = chVTGetSystemTimeX();
+		}
+		armed = false;
+
+		// The shutdown thread did not cut the power (always on mode, or the
+		// motor could not be stopped). Drop the request.
+		if (off_request && UTILS_AGE_S(request_time) > BT_REQUEST_TIME_S) {
+			off_request = false;
+		}
 	}
 
-	if (beep_active && (!pressed || UTILS_AGE_S(beep_start) > SHUTDOWN_BEEP_TIME_S)) {
+	if (beep_active && (!pressed || UTILS_AGE_S(beep_start) > BT_BEEP_TIME_S)) {
 		beep_active = false;
 		EXT_BUZZER_OFF();
 	}
 
-	return !pressed;
+	was_pressed = pressed;
+
+	return !off_request;
 }
 
 static void terminal_button_test(int argc, const char **argv) {
@@ -237,8 +313,8 @@ static void terminal_button_test(int argc, const char **argv) {
 	(void)argv;
 
 	for (int i = 0;i < 40;i++) {
-		commands_printf("BT: sample=%d filtered=%d",
-				(int)HW_SAMPLE_SHUTDOWN(), (int)shutdown_button_pressed());
+		commands_printf("BT: pressed=%d filtered=%d hold_off=%d",
+				(int)button_pressed(), (int)shutdown_button_pressed(), (int)hold_is_off());
 		chThdSleepMilliseconds(100);
 	}
 }
