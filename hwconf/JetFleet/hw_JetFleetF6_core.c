@@ -235,12 +235,17 @@ static bool hold_is_off(void) {
 	return (palReadLatch(HW_SHUTDOWN_GPIO) & (1U << HW_SHUTDOWN_PIN)) == 0;
 }
 
+// The shutdown thread wants the power cut, but the button was pressed
+static volatile bool hold_off_pending = false;
+
 /**
- * Cut the power, unless the button is pressed. In that case the shutdown is
- * skipped and the board stays on.
+ * Cut the power. If the button is pressed, wait until it is released. That
+ * is done from hw_sample_shutdown_button.
  */
 void hw_shutdown_hold_off(void) {
-	if (!button_pressed()) {
+	if (button_pressed()) {
+		hold_off_pending = true;
+	} else {
 		palClearPad(HW_SHUTDOWN_GPIO, HW_SHUTDOWN_PIN);
 	}
 }
@@ -257,7 +262,8 @@ void hw_shutdown_hold_off(void) {
  * - The press that powered the board on is ignored until it is released.
  * - Holding the button for 0.5 s (3 s when the motor is spinning) arms the
  *   shutdown and sounds the buzzer. Shutdown is requested on release.
- * - Pressing the button again before the power is cut cancels the request.
+ * - Pressing the button again does not cancel the request. The power is cut
+ *   when the button is released.
  */
 bool hw_sample_shutdown_button(void) {
 	static bool boot_released = false;
@@ -275,9 +281,11 @@ bool hw_sample_shutdown_button(void) {
 	bool pressed_raw = button_pressed();
 
 	// The power was cut and the button was pressed before it went away. Take
-	// the hold back so that the board stays on instead of browning out.
+	// the hold back so that the board does not brown out, and cut the power
+	// again when the button is released.
 	if (pressed_raw && hold_is_off()) {
 		HW_SHUTDOWN_HOLD_ON();
+		hold_off_pending = true;
 	}
 
 	// Debounce, so that contact bounce does not look like a new press. Start
@@ -295,7 +303,17 @@ bool hw_sample_shutdown_button(void) {
 	}
 
 	if (app_get_configuration()->shutdown_mode == SHUTDOWN_MODE_ALWAYS_OFF) {
+		hold_off_pending = false;
 		return pressed;
+	}
+
+	if (hold_off_pending) {
+		if (!pressed && !pressed_raw) {
+			hold_off_pending = false;
+			palClearPad(HW_SHUTDOWN_GPIO, HW_SHUTDOWN_PIN);
+		}
+		was_pressed = pressed;
+		return false;
 	}
 
 	if (!boot_released) {
@@ -304,15 +322,13 @@ bool hw_sample_shutdown_button(void) {
 	}
 
 	if (pressed) {
-		off_request = false;
-
 		if (!was_pressed) {
 			press_time = chVTGetSystemTimeX();
 			armed = false;
 		}
 
 		bool spinning = fabsf(mc_interface_get_rpm()) > BT_ERPM_THRESHOLD;
-		if (!armed && UTILS_AGE_S(press_time) >
+		if (!armed && !off_request && UTILS_AGE_S(press_time) >
 				(spinning ? BT_HOLD_TIME_SPINNING_S : BT_HOLD_TIME_S)) {
 			// Let the user know that the button can be released now
 			armed = true;
@@ -326,12 +342,12 @@ bool hw_sample_shutdown_button(void) {
 			request_time = chVTGetSystemTimeX();
 		}
 		armed = false;
+	}
 
-		// The shutdown thread did not cut the power (always on mode, or the
-		// motor could not be stopped). Drop the request.
-		if (off_request && UTILS_AGE_S(request_time) > BT_REQUEST_TIME_S) {
-			off_request = false;
-		}
+	// The shutdown thread did not cut the power (always on mode, or the
+	// motor could not be stopped). Drop the request.
+	if (off_request && UTILS_AGE_S(request_time) > BT_REQUEST_TIME_S) {
+		off_request = false;
 	}
 
 	if (beep_active && (!pressed || UTILS_AGE_S(beep_start) > BT_BEEP_TIME_S)) {
