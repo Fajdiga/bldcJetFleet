@@ -215,6 +215,7 @@ void hw_try_restore_i2c(void) {
 #define BT_ERPM_THRESHOLD		100.0
 #define BT_REQUEST_TIME_S		3.0		// Must outlast the 0.7 s vote in shutdown.c
 #define BT_BEEP_TIME_S			0.3
+#define BT_DEBOUNCE_SAMPLES		3		// 30 ms at the 10 ms sample rate
 
 /*
  * Power button
@@ -267,13 +268,23 @@ bool hw_sample_shutdown_button(void) {
 	static systime_t press_time = 0;
 	static systime_t request_time = 0;
 	static systime_t beep_start = 0;
+	static bool pressed = false;
+	static int debounce_cnt = 0;
 
-	bool pressed = button_pressed();
+	bool pressed_raw = button_pressed();
 
 	// The power was cut and the button was pressed before it went away. Take
 	// the hold back so that the board stays on instead of browning out.
-	if (pressed && hold_is_off()) {
+	if (pressed_raw && hold_is_off()) {
 		HW_SHUTDOWN_HOLD_ON();
+	}
+
+	// Debounce, so that contact bounce does not look like a new press
+	if (pressed_raw == pressed) {
+		debounce_cnt = 0;
+	} else if (++debounce_cnt >= BT_DEBOUNCE_SAMPLES) {
+		pressed = pressed_raw;
+		debounce_cnt = 0;
 	}
 
 	if (app_get_configuration()->shutdown_mode == SHUTDOWN_MODE_ALWAYS_OFF) {
