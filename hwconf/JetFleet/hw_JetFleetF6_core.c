@@ -22,6 +22,7 @@
 #include "hal.h"
 #include "stm32f4xx_conf.h"
 #include "utils_math.h"
+#include "utils_sys.h"
 #include <math.h>
 #include "terminal.h"
 #include "commands.h"
@@ -190,6 +191,8 @@ void hw_stop_i2c(void) {
 void hw_try_restore_i2c(void) {
 }
 
+#define SHUTDOWN_BEEP_TIME_S		0.3
+
 /**
  * The power button is a plain digital input: high when pressed, low when
  * released. Return true when it is released and false when it is pressed and
@@ -198,9 +201,35 @@ void hw_try_restore_i2c(void) {
  *
  * The press that powers the board on is not seen as a shutdown request, as
  * the shutdown thread only reacts when this goes from true to false.
+ *
+ * The buzzer sounds once the shutdown thread has released the hold pin while
+ * the button is still down, to tell the user that the button can be let go.
  */
 bool hw_sample_shutdown_button(void) {
-	return palReadPad(HW_SHUTDOWN_SENSE_GPIO, HW_SHUTDOWN_SENSE_PIN) == PAL_LOW;
+	static bool beep_done = false;
+	static bool beep_active = false;
+	static systime_t beep_start = 0;
+
+	bool pressed = palReadPad(HW_SHUTDOWN_SENSE_GPIO, HW_SHUTDOWN_SENSE_PIN) == PAL_HIGH;
+	bool hold_off = (palReadLatch(HW_SHUTDOWN_GPIO) & (1U << HW_SHUTDOWN_PIN)) == 0;
+
+	if (pressed && hold_off) {
+		if (!beep_done) {
+			beep_done = true;
+			beep_active = true;
+			beep_start = chVTGetSystemTimeX();
+			EXT_BUZZER_ON();
+		}
+	} else {
+		beep_done = false;
+	}
+
+	if (beep_active && (!pressed || UTILS_AGE_S(beep_start) > SHUTDOWN_BEEP_TIME_S)) {
+		beep_active = false;
+		EXT_BUZZER_OFF();
+	}
+
+	return !pressed;
 }
 
 static void terminal_button_test(int argc, const char **argv) {
