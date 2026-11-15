@@ -269,6 +269,7 @@ bool hw_sample_shutdown_button(void) {
 	static systime_t request_time = 0;
 	static systime_t beep_start = 0;
 	static bool pressed = false;
+	static bool pressed_init = false;
 	static int debounce_cnt = 0;
 
 	bool pressed_raw = button_pressed();
@@ -279,7 +280,13 @@ bool hw_sample_shutdown_button(void) {
 		HW_SHUTDOWN_HOLD_ON();
 	}
 
-	// Debounce, so that contact bounce does not look like a new press
+	// Debounce, so that contact bounce does not look like a new press. Start
+	// from the actual state, so that a button held at boot is seen as held.
+	if (!pressed_init) {
+		pressed_init = true;
+		pressed = pressed_raw;
+	}
+
 	if (pressed_raw == pressed) {
 		debounce_cnt = 0;
 	} else if (++debounce_cnt >= BT_DEBOUNCE_SAMPLES) {
