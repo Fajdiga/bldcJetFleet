@@ -1,4 +1,5 @@
 CSRC += \
+	motor/boost_charge.c \
 	motor/foc_math.c \
 	motor/mc_interface.c \
 	motor/mcpwm.c \

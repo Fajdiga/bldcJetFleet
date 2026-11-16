@@ -23,6 +23,7 @@
 #include "mc_interface.h"
 #include "mcpwm.h"
 #include "mcpwm_foc.h"
+#include "boost_charge.h"
 #include "ledpwm.h"
 #include "stm32f4xx_conf.h"
 #include "hw.h"
@@ -1835,6 +1836,11 @@ int mc_interface_try_input(void) {
 	}
 
 	int retval = motor_now()->m_ignore_iterations;
+
+	// No motor commands while a charger may be connected to the motor phases
+	if (boost_charge_locked()) {
+		retval = 1;
+	}
 
 	if (!motor_now()->m_ignore_iterations && motor_now()->m_lock_enabled) {
 		if (!motor_now()->m_lock_override_once) {

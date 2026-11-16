@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include "virtual_motor.h"
 #include "foc_math.h"
+#include "boost_charge.h"
 
 // Private variables
 static volatile bool m_dccal_done = false;
@@ -58,6 +59,7 @@ static void update_valpha_vbeta(motor_all_state_t *motor, float mod_alpha, float
 static void stop_pwm_hw(motor_all_state_t *motor);
 static void start_pwm_hw(motor_all_state_t *motor);
 static void full_brake_hw(motor_all_state_t *motor);
+static void boost_pwm_hw(motor_all_state_t *motor);
 static void terminal_plot_hfi(int argc, const char **argv);
 static void timer_update(motor_all_state_t *motor, float dt);
 static void hfi_update(volatile motor_all_state_t *motor, float dt);
@@ -482,14 +484,22 @@ void mcpwm_foc_init(mc_configuration *conf_m1, mc_configuration *conf_m2) {
 
 	utils_sys_unlock_cnt();
 
+	// Look for a charger on the motor phases before the gate driver is enabled
+	// and before the offset calibration, which would short the charger.
+	const bool charger_connected = boost_charge_boot_check();
+
 	CURRENT_FILTER_ON();
 	CURRENT_FILTER_ON_M2();
 	ENABLE_GATE();
 	DCCAL_OFF();
 #ifdef HW_USE_ALTERNATIVE_DC_CAL
+	(void)charger_connected;
 	m_dccal_done = true;
 #else
-	if (m_motor_1.m_conf->foc_offsets_cal_mode & (1 << 0)) {
+	if (charger_connected) {
+		// Keep the stored offsets
+		m_dccal_done = true;
+	} else if (m_motor_1.m_conf->foc_offsets_cal_mode & (1 << 0)) {
 		systime_t cal_start_time = chVTGetSystemTimeX();
 		float cal_start_timeout = 10.0;
 
@@ -2507,6 +2517,11 @@ int mcpwm_foc_hall_detect(float current, uint8_t *hall_table, bool *result) {
  */
 #ifndef HW_USE_ALTERNATIVE_DC_CAL
 int mcpwm_foc_dc_cal(bool cal_undriven) {
+	// The calibration switches all phases and would short a connected charger
+	if (boost_charge_locked()) {
+		return -1;
+	}
+
 	// Wait max 5 seconds for DRV-fault to go away
 	int cnt = 0;
 	while(IS_DRV_FAULT()){
@@ -2638,6 +2653,7 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 	voltage_sum[1] /= samples;
 	voltage_sum[2] /= samples;
 	float v_avg = (voltage_sum[0] + voltage_sum[1] + voltage_sum[2]) / 3.0;
+	boost_charge_calibrate(v_avg, mc_interface_get_input_voltage_filtered());
 
 	m_motor_1.m_conf->foc_offsets_voltage[0] = voltage_sum[0] - v_avg;
 	m_motor_1.m_conf->foc_offsets_voltage[1] = voltage_sum[1] - v_avg;
@@ -2720,6 +2736,11 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 // WARNING: This calibration routine can only be run when the motor is not spinning.
 // For low side shunt hardware with high capacitance mosfets this works a lot better
 int mcpwm_foc_dc_cal(bool cal_undriven) {
+	// The calibration switches all phases and would short a connected charger
+	if (boost_charge_locked()) {
+		return -1;
+	}
+
 	// Wait max 5 seconds for DRV-fault to go away
 	int cnt = 0;
 	while(IS_DRV_FAULT()){
@@ -2786,6 +2807,7 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 	voltage_sum[1] /= samples;
 	voltage_sum[2] /= samples;
 	float v_avg = (voltage_sum[0] + voltage_sum[1] + voltage_sum[2]) / 3.0;
+	boost_charge_calibrate(v_avg, mc_interface_get_input_voltage_filtered());
 
 	m_motor_1.m_conf->foc_offsets_voltage[0] = voltage_sum[0] - v_avg;
 	m_motor_1.m_conf->foc_offsets_voltage[1] = voltage_sum[1] - v_avg;
@@ -2961,7 +2983,8 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 	float fs = motor_now->p_fs;
 	float dt = motor_now->p_dt;
 
-	if (conf_other->foc_control_sample_mode == FOC_CONTROL_SAMPLE_MODE_V0_V7_INTERPOL && !skip_interpolation) {
+	if (conf_other->foc_control_sample_mode == FOC_CONTROL_SAMPLE_MODE_V0_V7_INTERPOL && !skip_interpolation &&
+			!boost_charge_locked()) {
 		float interpolated_phase = motor_other->m_motor_state.phase + motor_other->m_speed_est_fast * dt * 0.5;
 		utils_norm_angle_rad(&interpolated_phase);
 
@@ -3080,6 +3103,34 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 	// Calculate third current assuming they are balanced
 	curr2 = -(curr0 + curr1);
 #endif
+
+	// Boost charging through the motor. While the charge lock is set the motor
+	// is held off here, every cycle, no matter what was commanded elsewhere.
+	{
+		float boost_duty = 0.0;
+		// Read the output state from the timer, as the offset calibration
+		// switches the legs without going through start_pwm_hw.
+		const bool outputs_off = (TIM1->CCER & (TIM_CCER_CC1NE | TIM_CCER_CC2NE | TIM_CCER_CC3NE)) == 0;
+		boost_out_t boost_out = boost_charge_isr(curr0, curr1, curr2,
+				outputs_off && motor_now->m_state == MC_STATE_OFF, dt, &boost_duty);
+
+		if (boost_out != BOOST_OUT_UNLOCKED) {
+			motor_now->m_state = MC_STATE_OFF;
+			motor_now->m_control_mode = CONTROL_MODE_NONE;
+
+			// All legs get the same compare value. The supply phase is forced off.
+			uint32_t duty_cnt = (uint32_t)(boost_duty * (float)TIM1->ARR + 0.5);
+			TIMER_UPDATE_DUTY_M1(duty_cnt, duty_cnt, duty_cnt);
+
+			if (boost_out == BOOST_OUT_SWITCHING) {
+				if (motor_now->m_pwm_mode != FOC_PWM_BOOST) {
+					boost_pwm_hw(motor_now);
+				}
+			} else if (motor_now->m_pwm_mode != FOC_PWM_DISABLED || !outputs_off) {
+				stop_pwm_hw(motor_now);
+			}
+		}
+	}
 
 #define SHUNT_PICK_THR 900
 
@@ -5269,7 +5320,46 @@ static void stop_pwm_hw(motor_all_state_t *motor) {
 	motor->m_pwm_mode = FOC_PWM_DISABLED;
 }
 
+/**
+ * Boost charging: the supply phase stays off and the two other legs switch.
+ */
+static void boost_pwm_hw(motor_all_state_t *motor) {
+	if (!boost_charge_locked() || motor != &m_motor_1) {
+		stop_pwm_hw(motor);
+		return;
+	}
+
+#ifdef HW_HAS_3_SHUNTS
+	static const uint16_t phase_channel[3] = {TIM_Channel_1, TIM_Channel_2, TIM_Channel_3};
+#else
+	// Phase 2 and 3 are swapped on the timer, see TIMER_UPDATE_DUTY_M1
+	static const uint16_t phase_channel[3] = {TIM_Channel_1, TIM_Channel_3, TIM_Channel_2};
+#endif
+
+	for (int i = 0;i < 3;i++) {
+		if (i == boost_charge_phase()) {
+			TIM_SelectOCxM(TIM1, phase_channel[i], TIM_ForcedAction_InActive);
+			TIM_CCxCmd(TIM1, phase_channel[i], TIM_CCx_Enable);
+			TIM_CCxNCmd(TIM1, phase_channel[i], TIM_CCxN_Disable);
+		} else {
+			TIM_SelectOCxM(TIM1, phase_channel[i], TIM_OCMode_PWM1);
+			TIM_CCxCmd(TIM1, phase_channel[i], TIM_CCx_Enable);
+			TIM_CCxNCmd(TIM1, phase_channel[i], TIM_CCxN_Enable);
+		}
+	}
+
+	// The COM event that applies this is generated in the sample interrupt,
+	// after the compare values written before this call have been loaded.
+
+	motor->m_pwm_mode = FOC_PWM_BOOST;
+}
+
 static void start_pwm_hw(motor_all_state_t *motor) {
+	if (boost_charge_locked()) {
+		stop_pwm_hw(motor);
+		return;
+	}
+
 	if (motor == &m_motor_1) {
 		TIM_SelectOCxM(TIM1, TIM_Channel_1, TIM_OCMode_PWM1);
 		TIM_CCxCmd(TIM1, TIM_Channel_1, TIM_CCx_Enable);
@@ -5333,6 +5423,11 @@ static void start_pwm_hw(motor_all_state_t *motor) {
 }
 
 static void full_brake_hw(motor_all_state_t *motor) {
+	if (boost_charge_locked()) {
+		stop_pwm_hw(motor);
+		return;
+	}
+
 	if (motor == &m_motor_1) {
 		TIM_SelectOCxM(TIM1, TIM_Channel_1, TIM_ForcedAction_InActive);
 		TIM_CCxCmd(TIM1, TIM_Channel_1, TIM_CCx_Enable);

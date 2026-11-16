@@ -132,7 +132,8 @@ typedef struct {
 typedef enum {
 	FOC_PWM_DISABLED = 0,
 	FOC_PWM_ENABLED,
-	FOC_PWM_FULL_BRAKE
+	FOC_PWM_FULL_BRAKE,
+	FOC_PWM_BOOST
 } foc_pwm_mode;
 
 typedef struct {

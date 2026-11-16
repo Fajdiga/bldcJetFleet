@@ -44,6 +44,7 @@
 #include "utils_sys.h"
 #include "hw.h"
 #include "mcpwm_foc.h"
+#include "boost_charge.h"
 #include "imu.h"
 #include "mempools.h"
 #include "app.h"
@@ -1922,6 +1923,77 @@ static lbm_value ext_set_current(lbm_value *args, lbm_uint argn) {
 	}
 
 	return ENC_SYM_TRUE;
+}
+
+// Boost charging through the motor, see motor/boost_charge.h
+
+// (boost-lock lock) -> t if the charge lock now has the requested state
+static lbm_value ext_boost_lock(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+	return boost_charge_set_lock(lbm_dec_as_i32(args[0]) != 0) ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
+// (boost-config i-max i-slew i-trip v-bat-max v-sup-min v-sup-max kp ki phase)
+static lbm_value ext_boost_config(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(9);
+
+	boost_config_t conf;
+	conf.i_max = lbm_dec_as_float(args[0]);
+	conf.i_slew = lbm_dec_as_float(args[1]);
+	conf.i_trip = lbm_dec_as_float(args[2]);
+	conf.v_bat_max = lbm_dec_as_float(args[3]);
+	conf.v_sup_min = lbm_dec_as_float(args[4]);
+	conf.v_sup_max = lbm_dec_as_float(args[5]);
+	conf.kp = lbm_dec_as_float(args[6]);
+	conf.ki = lbm_dec_as_float(args[7]);
+	conf.phase = lbm_dec_as_i32(args[8]);
+	boost_charge_configure(&conf);
+
+	return ENC_SYM_TRUE;
+}
+
+// (boost-set-current current) -> t if accepted. Refresh at least every 500 ms.
+static lbm_value ext_boost_set_current(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+	return boost_charge_set_current(lbm_dec_as_float(args[0])) ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
+// (boost-stop) -> t. Outputs off now.
+static lbm_value ext_boost_stop(lbm_value *args, lbm_uint argn) {
+	(void)args; (void)argn;
+	boost_charge_stop();
+	return ENC_SYM_TRUE;
+}
+
+// (boost-clear-trip) -> t
+static lbm_value ext_boost_clear_trip(lbm_value *args, lbm_uint argn) {
+	(void)args; (void)argn;
+	boost_charge_clear_trip();
+	return ENC_SYM_TRUE;
+}
+
+// (boost-status) -> (lock active trip v-sup i-in v-bat duty i-ref v-low-time v-ph1 v-ph2 v-ph3)
+static lbm_value ext_boost_status(lbm_value *args, lbm_uint argn) {
+	(void)args; (void)argn;
+
+	boost_status_t st;
+	boost_charge_get_status(&st);
+
+	lbm_value res = ENC_SYM_NIL;
+	res = lbm_cons(lbm_enc_float(st.v_phase[2]), res);
+	res = lbm_cons(lbm_enc_float(st.v_phase[1]), res);
+	res = lbm_cons(lbm_enc_float(st.v_phase[0]), res);
+	res = lbm_cons(lbm_enc_float(st.v_low_time), res);
+	res = lbm_cons(lbm_enc_float(st.i_ref), res);
+	res = lbm_cons(lbm_enc_float(st.duty), res);
+	res = lbm_cons(lbm_enc_float(st.v_bat), res);
+	res = lbm_cons(lbm_enc_float(st.i_in), res);
+	res = lbm_cons(lbm_enc_float(st.v_sup), res);
+	res = lbm_cons(lbm_enc_i(st.trip), res);
+	res = lbm_cons(lbm_enc_i(st.active), res);
+	res = lbm_cons(lbm_enc_i(st.lock), res);
+
+	return res;
 }
 
 static lbm_value ext_set_current_rel(lbm_value *args, lbm_uint argn) {
@@ -6808,6 +6880,14 @@ void lispif_load_vesc_extensions(bool main_found) {
 		// Motor set commands
 		lbm_add_extension("set-current", ext_set_current);
 		lbm_add_extension("set-current-rel", ext_set_current_rel);
+
+		// Boost charging
+		lbm_add_extension("boost-lock", ext_boost_lock);
+		lbm_add_extension("boost-config", ext_boost_config);
+		lbm_add_extension("boost-set-current", ext_boost_set_current);
+		lbm_add_extension("boost-stop", ext_boost_stop);
+		lbm_add_extension("boost-clear-trip", ext_boost_clear_trip);
+		lbm_add_extension("boost-status", ext_boost_status);
 		lbm_add_extension("set-duty", ext_set_duty);
 		lbm_add_extension("set-brake", ext_set_brake);
 		lbm_add_extension("set-brake-rel", ext_set_brake_rel);
