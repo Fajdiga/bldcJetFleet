@@ -26,6 +26,7 @@
 #include "utils_math.h"
 #include "commands.h"
 #include "terminal.h"
+#include "flash_helper.h"
 #include <math.h>
 
 // A charger is assumed to be connected when all three phases, with all FETs
@@ -49,7 +50,7 @@
 #define BOOST_SETPOINT_TIMEOUT	0.5		// Seconds
 #define BOOST_RATIO_MAX			0.93	// Highest supply to battery voltage ratio, keep below BOOST_DUTY_MAX
 #define BOOST_DUTY_MAX			0.95	// Highest high side duty, leaves the low side room for dead time
-#define BOOST_DUTY_MIN			0.15	// Lowest high side duty, limits the step-up ratio to 6.7
+#define BOOST_DUTY_MIN			0.10	// Lowest high side duty, limits the step-up ratio to 10
 // The legs never average less than BOOST_DUTY_MIN * v_bat. A supply below that
 // would get current pushed back into it from the battery, so starting needs this
 // much margin above it and running trips just above it.
@@ -60,14 +61,15 @@
 #ifndef BOOST_V_ERR
 #define BOOST_V_ERR				2.0
 #endif
-// Boost starts with the legs this far below the supply voltage, as a fraction
-// of it plus BOOST_START_MARGIN_V, so that the first current flows into the
-// battery and not back into the supply. Only the ratio of the phase and battery
-// dividers matters here. It is measured by the offset calibration; without that
-// measurement the margin has to cover 1 % resistors (2 % per divider).
-#define BOOST_START_MARGIN_CAL	0.01
-#define BOOST_START_MARGIN_UNCAL	0.04
-#define BOOST_START_MARGIN_V	0.1
+// Boost starts with the legs at the supply voltage as it was read at that
+// moment, and that voltage is held for the duty until this much forward current
+// flows. A reading error then balances itself: if the legs are a little above
+// the supply, the current that flows back lifts the output capacitor of the
+// supply by that error and stops. If the duty followed the supply voltage from
+// the start, the legs would rise with it and the current would keep flowing.
+// The error is the supply phase divider against the battery divider, which the
+// offset calibration measures for each phase (boost_charge_calibrate).
+#define BOOST_FF_TRACK_A		0.3
 // Fast reverse current trip on the unfiltered current. Short reverse spikes end
 // up in the output capacitors of the supply; this stops anything that lasts.
 #define BOOST_REV_TRIP_A		2.0
@@ -75,9 +77,17 @@
 #define BOOST_REV_GAIN			0.5		// Fraction of the one period (deadbeat) gain used against reverse current
 #define BOOST_NO_CURRENT_TIME	0.5		// Seconds at BOOST_DUTY_MIN with less than half the current
 
-#if defined(HW_HAS_DUAL_MOTORS) || defined(HW_HAS_DUAL_PARALLEL)
-// ponytail: single motor hardware only. Dual hardware never locks, so the
-// rest of this file is inert there. Add TIM8 handling if it is ever needed.
+// The current sensors are zeroed while the lock is set and all FETs have been
+// off for this long, so that the winding current is gone.
+#define BOOST_ZERO_DELAY		0.05	// Seconds
+// A lock from the boot check is dropped when no script has armed the charger
+// detection after this long: the package was removed, or its script does not run.
+#define BOOST_ARM_TIMEOUT		5.0		// Seconds
+
+#if defined(HW_HAS_DUAL_MOTORS) || defined(HW_HAS_DUAL_PARALLEL) || defined(HW_USE_LINE_TO_LINE)
+// ponytail: single motor hardware with phase to ground voltage sensing only.
+// Other hardware never locks, so the rest of this file is inert there. Add
+// TIM8 handling if it is ever needed.
 #define BOOST_UNSUPPORTED
 #endif
 
@@ -107,41 +117,71 @@ static volatile float m_no_current_time = 0.0;
 static volatile float m_v_phase[3] = {0.0, 0.0, 0.0};
 static volatile int m_ov_cnt = 0;
 static volatile int m_rev_cnt = 0;
-static volatile float m_ph_gain = 1.0;	// Phase dividers / battery divider
-static volatile bool m_gain_cal = false;
+// Battery divider / phase divider for ADC_V_L1 to ADC_V_L3
+static volatile float m_ph_k[3] = {1.0, 1.0, 1.0};
+static volatile int m_gain_cal = 0;		// One bit for each measured phase
+static volatile bool m_armed = false;
+static volatile float m_unarmed_time = 0.0;
+static volatile float m_i_zero = 0.0;	// Input current reading with all FETs off
+static volatile float m_off_time = 0.0;
+static volatile float m_v_ff = 0.0;		// Supply voltage used for the duty
+static volatile bool m_ff_track = false;
 
 static void terminal_status(int argc, const char **argv);
 
 // Phase voltages in motor phase order, the same mapping as update_valpha_vbeta
 static void read_phase_volts(float *v) {
-	const float k = 1.0 / m_ph_gain;
-	v[0] = k * PH_V(ADC_V_L1_VOLTS);
+	v[0] = m_ph_k[0] * PH_V(ADC_V_L1_VOLTS);
 #ifdef HW_HAS_3_SHUNTS
-	v[1] = k * PH_V(ADC_V_L2_VOLTS);
-	v[2] = k * PH_V(ADC_V_L3_VOLTS);
+	v[1] = m_ph_k[1] * PH_V(ADC_V_L2_VOLTS);
+	v[2] = m_ph_k[2] * PH_V(ADC_V_L3_VOLTS);
 #else
-	v[1] = k * PH_V(ADC_V_L3_VOLTS);
-	v[2] = k * PH_V(ADC_V_L2_VOLTS);
+	v[1] = m_ph_k[2] * PH_V(ADC_V_L3_VOLTS);
+	v[2] = m_ph_k[1] * PH_V(ADC_V_L2_VOLTS);
 #endif
 }
 
-void boost_charge_calibrate(float v_ph_adc_half, float v_bat) {
-	if (v_bat < 8.0) {
+void boost_charge_calibrate(int adc_ch, float v_ph_adc_1, float v_ph_adc_2, float v_bat) {
+	if (adc_ch < 0 || adc_ch > 2) {
 		return;
 	}
 
-	const float gain = PH_V(v_ph_adc_half) / (0.5 * v_bat);
+	const float gain = PH_V(v_ph_adc_2) / fmaxf(v_bat, 1.0);
 
-	// Anything further off than the resistors allow is a failed measurement
-	if (gain > 0.95 && gain < 1.05) {
-		m_ph_gain = gain;
-		m_gain_cal = true;
+	// A reading that still moves has not settled, and anything further off than
+	// the resistors allow is a failed measurement. The wider margin is used then.
+	if (v_bat < 8.0 || fabsf(v_ph_adc_2 - v_ph_adc_1) > 0.003 * v_ph_adc_2 ||
+			gain < 0.95 || gain > 1.05) {
+		m_gain_cal &= ~(1 << adc_ch);
+		m_ph_k[adc_ch] = 1.0;
+	} else {
+		m_ph_k[adc_ch] = 1.0 / gain;
+		m_gain_cal |= 1 << adc_ch;
 	}
 }
 
-static float start_margin(float v_sup) {
-	return BOOST_START_MARGIN_V +
-			(m_gain_cal ? BOOST_START_MARGIN_CAL : BOOST_START_MARGIN_UNCAL) * v_sup;
+// The charger detection only runs for the boost charge package. Its script
+// stores a marker in the lisp eeprom, which is what the boot check can see
+// before any script runs, and arms the detection when it starts.
+#ifndef BOOST_UNSUPPORTED
+static bool package_installed(void) {
+	eeprom_var v;
+	return flash_helper_code_size(CODE_IND_LISP) > 0 &&
+			conf_general_read_eeprom_var_custom(&v, BOOST_EEPROM_ARM_ADDR) &&
+			v.as_i32 == BOOST_EEPROM_ARM_MAGIC;
+}
+#endif
+
+bool boost_charge_armed(void) {
+#ifdef BOOST_UNSUPPORTED
+	return false;
+#else
+	return m_armed || package_installed();
+#endif
+}
+
+void boost_charge_arm(void) {
+	m_armed = true;
 }
 
 // Supply too low: even the lowest duty would push current back into it
@@ -187,6 +227,10 @@ bool boost_charge_boot_check(void) {
 #ifdef BOOST_UNSUPPORTED
 	return false;
 #else
+	if (!package_installed()) {
+		return false;
+	}
+
 	// Let the ADC run a few cycles after it was started
 	chThdSleepMilliseconds(10);
 
@@ -310,7 +354,9 @@ bool boost_charge_set_current(float current) {
 			return false;
 		}
 
-		m_integ = start_margin(m_v_sup);
+		m_integ = 0.0;
+		m_v_ff = m_v_sup;
+		m_ff_track = false;
 		m_i_ref = 0.0;
 		m_ov_cnt = 0;
 		m_rev_cnt = 0;
@@ -391,9 +437,17 @@ boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float
 	LP(m_v_bat, v_bat_raw, 0.05);
 	const float v_bat = fmaxf(m_v_bat, 1.0);
 
+	if (!m_armed) {
+		if (m_lock && m_unarmed_time < BOOST_ARM_TIMEOUT) {
+			m_unarmed_time += dt;
+		} else {
+			m_lock = false;
+		}
+	}
+
 	if (!m_lock) {
 		// Charger plugged in while the outputs are off (case 3 with luck)
-		if (motor_off && charger_seen(v, v_bat)) {
+		if (m_armed && motor_off && charger_seen(v, v_bat)) {
 			m_detect_time += dt;
 			if (m_detect_time > BOOST_DETECT_TIME) {
 				m_v_low_time = 0.0;
@@ -413,13 +467,26 @@ boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float
 	const float i_leg_1 = phase == 0 ? ib : ia;
 	const float i_leg_2 = phase == 2 ? ib : ic;
 
+	LP(m_v_sup, v[phase >= 0 && phase <= 2 ? phase : 0], 0.05);
+	const float v_sup = m_v_sup;
+
 	// The input current returns through the two boost legs, so this holds no
 	// matter on which side of the phase current sensor the supply is connected.
-	const float i_in = -(i_leg_1 + i_leg_2);
+	const float i_raw = -(i_leg_1 + i_leg_2);
 
-	LP(m_v_sup, v[phase >= 0 && phase <= 2 ? phase : 0], 0.05);
+	// With all FETs off and the supply below the battery no current can flow,
+	// so what the sensors show then is their offset. This is more accurate than
+	// the offsets from boot, which matters for small and for reverse currents.
+	if (m_active) {
+		m_off_time = 0.0;
+	} else if (m_off_time < BOOST_ZERO_DELAY) {
+		m_off_time += dt;
+	} else if (v_sup < v_bat) {
+		LP(m_i_zero, i_raw, 0.01);
+	}
+
+	const float i_in = i_raw - m_i_zero;
 	LP(m_i_in, i_in, 0.01);
-	const float v_sup = m_v_sup;
 
 	if (v_sup >= detect_threshold(v_bat)) {
 		// A real charger is seen, so unplugging can be detected from here on
@@ -432,11 +499,10 @@ boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float
 		m_v_low_time += dt;
 	}
 
-	// With this duty the legs average just below the supply voltage, so the
-	// first current is small and flows into the battery. It is always written
-	// to the timer so that enabling the outputs never starts from a stale
-	// compare value.
-	float duty = (v_sup - start_margin(v_sup)) / v_bat;
+	// With this duty the legs average the supply voltage, so no current flows.
+	// It is always written to the timer so that enabling the outputs never
+	// starts from a stale compare value.
+	float duty = v_sup / v_bat;
 	utils_truncate_number(&duty, BOOST_DUTY_MIN, BOOST_DUTY_MAX);
 	*duty_hs = duty;
 	m_duty = duty;
@@ -509,13 +575,23 @@ boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float
 
 	// Current flowing back into the supply: answer it with half the gain that
 	// would remove it in one period. Proportional only and one sided, so it
-	// does not overshoot into forward current. Mostly matters at the start,
-	// where a voltage reading error gives the first current its direction.
+	// does not overshoot into forward current.
 	const float l_tot = 1.5 * mcconf->foc_motor_l;
 	if (i_in < 0.0 && l_tot > 0.0) {
 		u -= BOOST_REV_GAIN * l_tot / dt * i_in;
 	}
-	duty = (v_sup - u) / v_bat;
+
+	// See BOOST_FF_TRACK_A. The integrator takes over what the supply voltage
+	// has moved in the meantime, so that the duty does not jump.
+	if (!m_ff_track && m_i_in > BOOST_FF_TRACK_A) {
+		m_integ += v_sup - m_v_ff;
+		u += v_sup - m_v_ff;
+		m_ff_track = true;
+	}
+	if (m_ff_track) {
+		m_v_ff = v_sup;
+	}
+	duty = (m_v_ff - u) / v_bat;
 
 	const bool sat_low = duty < BOOST_DUTY_MIN;
 	const bool sat_high = duty > BOOST_DUTY_MAX;
@@ -548,6 +624,7 @@ boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float
 static void terminal_status(int argc, const char **argv) {
 	(void)argc; (void)argv;
 
+	commands_printf("Detection : %s", m_armed ? "armed by the script" : "off, no boost charge script running");
 	commands_printf("Lock      : %d (boot: %d, manual: %d)", m_lock, m_boot_lock, m_manual_lock);
 	commands_printf("Active    : %d", m_active);
 	commands_printf("Trip      : %s", boost_charge_trip_str(m_trip));
@@ -559,5 +636,7 @@ static void terminal_status(int argc, const char **argv) {
 	commands_printf("Duty      : %.3f", (double)m_duty);
 	// At low current this is the phase and battery voltage reading error
 	commands_printf("Loop offs : %.2f V", (double)m_integ);
-	commands_printf("Ph/bat cal: %.4f (%s)\n", (double)m_ph_gain, m_gain_cal ? "measured" : "not measured");
+	commands_printf("I zero    : %.2f A", (double)m_i_zero);
+	commands_printf("Bat/ph cal: %.4f %.4f %.4f (%s)\n", (double)m_ph_k[0], (double)m_ph_k[1], (double)m_ph_k[2],
+			m_gain_cal == 7 ? "measured" : "not measured");
 }

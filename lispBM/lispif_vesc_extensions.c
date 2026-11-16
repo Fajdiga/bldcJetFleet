@@ -1933,6 +1933,13 @@ static lbm_value ext_boost_lock(lbm_value *args, lbm_uint argn) {
 	return boost_charge_set_lock(lbm_dec_as_i32(args[0]) != 0) ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
+// (boost-arm) -> t. Turns the charger detection on, see boost_charge_arm.
+static lbm_value ext_boost_arm(lbm_value *args, lbm_uint argn) {
+	(void)args; (void)argn;
+	boost_charge_arm();
+	return ENC_SYM_TRUE;
+}
+
 // (boost-config i-max i-slew i-trip v-bat-max v-sup-min v-sup-max kp ki phase)
 static lbm_value ext_boost_config(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(9);
@@ -6882,6 +6889,7 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("set-current-rel", ext_set_current_rel);
 
 		// Boost charging
+		lbm_add_extension("boost-arm", ext_boost_arm);
 		lbm_add_extension("boost-lock", ext_boost_lock);
 		lbm_add_extension("boost-config", ext_boost_config);
 		lbm_add_extension("boost-set-current", ext_boost_set_current);

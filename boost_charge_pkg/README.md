@@ -10,7 +10,7 @@ This package only works on firmware built with `motor/boost_charge.c`. On other 
 
 - Plug in with the ESC off, **or** enable charge mode first. Never plug the charger into an ESC that is driving the motor: the supply is shorted and only the fuse helps.
 - A supply that is switched off but still plugged in counts as plugged in.
-- The supply voltage must be below the empty-pack voltage (90 to 95 % of it), and above 17 % of the battery voltage plus 2 V for measurement error (at least 9.6 V for 42 V, 31.4 V for 168 V). Below that, charging is refused.
+- The supply voltage must be below the empty-pack voltage (90 to 95 % of it), and above 12 % of the battery voltage plus 2 V for measurement error (at least 7.1 V for 42 V, 21.6 V for 168 V). Below that, charging is refused.
 - There is no diode or switch on the supply. A fast fuse in the supply + lead is mandatory.
 
 ## How to charge
@@ -43,8 +43,8 @@ If no BMS has been heard on the CAN bus for 30 s, the pack voltage divided by th
 
 ## Before the first charge
 
-1. Run one normal boot without the charger so that current offsets are stored (FOC offset calibration, then write the motor configuration).
-2. With no charger connected, open the terminal and run `boost_status`. The three phase voltages must be well below "Detect at". If they are not, the ESC will lock itself at every boot.
+1. After installing the package, restart the ESC once without the charger. The firmware only looks for a charger, and only measures its voltage dividers at boot, once this package has been installed and has run. That boot also stores the current offsets (FOC offset calibration, then write the motor configuration).
+2. With no charger connected, open the terminal and run `boost_status`. The three phase voltages must be well below "Detect at". If they are not, the ESC will lock itself at every boot. "Bat/ph cal" should say "measured": the phase voltage dividers were then measured against the battery divider at boot. If it says "not measured", the first current at each start is larger: the charger voltage can rise by up to 4 % for a moment, or a few amps can flow into the battery.
 3. Set the charge current to 1 A for the first run.
 4. For a run without cell checks, set the pack voltage limit under advanced settings and use **Bench test** at 1 A. Compare the charger current with an external meter.
 
@@ -58,6 +58,8 @@ If no BMS has been heard on the CAN bus for 30 s, the pack voltage divided by th
 
 ## What the firmware does on its own
 
+- Nothing at all until this package is installed: the charger detection is switched on by the script.
 - Boot check: looks for a charger on the phases before the gate driver is enabled and skips the offset calibration if it finds one.
+- Zeroes the charger current reading while charge mode is on and all FETs are off, so that small currents and reverse current are measured correctly.
 - Charge lock: every motor command, the brake and the timeout action become "all FETs off".
 - Trips inside the PWM interrupt: pack over-voltage, over-current, reverse current, supply too high, too low or too close to the battery voltage, and a setpoint that was not refreshed for 500 ms.

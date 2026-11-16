@@ -119,7 +119,7 @@
         "no stored current offsets, boot once without the charger"
         "bad configuration"
         "no current: charger not connected, or its voltage is too low for this pack"
-        "charger voltage too low for this battery (needs about 17 % of the battery voltage + 2 V)"
+        "charger voltage too low for this battery (needs about 12 % of the battery voltage + 2 V)"
 ))
 
 (defun min2 (a b) (if (< a b) a b))
@@ -481,6 +481,14 @@
 @const-end
 
 (load-settings)
+
+; Charger detection is off in the firmware until this package asks for it. The
+; marker is what the firmware finds at the next boot, before this script runs.
+; Same address and value as BOOST_EEPROM_ARM_* in motor/boost_charge.h.
+(let ((mark (eeprom-read-i (- eeprom-base 1))))
+    (if (not (and mark (= mark eeprom-magic)))
+        (eeprom-store-i (- eeprom-base 1) eeprom-magic)))
+(boost-arm)
 (event-register-handler (spawn event-handler))
 (event-enable 'event-data-rx)
 

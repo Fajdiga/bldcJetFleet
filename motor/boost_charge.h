@@ -78,11 +78,22 @@ typedef struct {
 // the offset calibration. Sets the charge lock if a charger is connected.
 bool boost_charge_boot_check(void);
 
-// Called from the offset calibration with the average phase reading [ADC volts]
-// while the phases were driven at 50 % duty, and the battery voltage [V]. Gives
-// the gain of the phase dividers against the battery divider, which is what
-// decides the direction of the first current when boost starts.
-void boost_charge_calibrate(float v_ph_adc_half, float v_bat);
+// Called from the offset calibration while the high side FET of a phase is held
+// on, so that the phase is at the battery voltage: adc_ch is 0 to 2 for ADC_V_L1
+// to ADC_V_L3, v_ph_adc_1 and v_ph_adc_2 are two readings after each other [ADC
+// volts] and v_bat is the battery reading at that time [V]. Stores the gain of
+// that phase divider against the battery divider, which is what decides the
+// size and direction of the first current when boost starts.
+void boost_charge_calibrate(int adc_ch, float v_ph_adc_1, float v_ph_adc_2, float v_bat);
+
+// The charger detection is off until a script arms it, so that firmware without
+// the boost charge package behaves as if this file was not there. The script
+// also stores BOOST_EEPROM_ARM_MAGIC at BOOST_EEPROM_ARM_ADDR in the lisp
+// eeprom, which makes boost_charge_armed true from boot on.
+#define BOOST_EEPROM_ARM_ADDR	199
+#define BOOST_EEPROM_ARM_MAGIC	0x42C1
+void boost_charge_arm(void);
+bool boost_charge_armed(void);
 
 // True while the charge lock is set. All motor commands must be refused then.
 bool boost_charge_locked(void);

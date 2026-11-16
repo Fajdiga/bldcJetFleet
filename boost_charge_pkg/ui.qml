@@ -135,6 +135,11 @@ Item {
         return h + ":" + (m < 10 ? "0" : "") + m
     }
 
+    // Rounded first, so that a small negative reading is not shown as -0
+    function fmtPower() {
+        return String(Math.round(vSup * iIn)) + " W"
+    }
+
     function fmtTemp(t) {
         return t < -40 ? "–" : t.toFixed(0) + "°"
     }
@@ -144,10 +149,11 @@ Item {
 
     function tileValue(i) {
         switch (i) {
-        case 0: return vSup.toFixed(1) + " V"
+        // The charger side is only measured in charge mode
+        case 0: return chgState === 0 ? "–" : vSup.toFixed(1) + " V"
         case 1: return vBat.toFixed(1) + " V"
-        case 2: return iIn.toFixed(1) + " A"
-        case 3: return (vSup * iIn).toFixed(0) + " W"
+        case 2: return chgState === 0 ? "–" : iIn.toFixed(1) + " A"
+        case 3: return chgState === 0 ? "–" : fmtPower()
         case 4: return bmsOk ? cellMin.toFixed(2) + " – " + cellMax.toFixed(2) + " V" :
                                (cells > 0 ? (vBat / cells).toFixed(2) + " V" : "–")
         case 5: return fmtTemp(tFet) + " / " + fmtTemp(tMot)
@@ -484,7 +490,7 @@ Item {
                                 color: "white"
                                 font.pointSize: 26
                                 font.bold: true
-                                text: (vSup * iIn).toFixed(0) + " W"
+                                text: fmtPower()
                             }
 
                             // Battery level
@@ -588,7 +594,9 @@ Item {
                         visible: online && locked && !charging && chgState !== 2
                         Material.background: "#546e7a"
                         text: "Back to motor mode (unplug the charger first)"
-                        onClicked: sendCode("(ui-lock 0)")
+                        // With voltage still on the phase the firmware can not
+                        // always tell a charger from leakage, so the user has to
+                        onClicked: vSup > 5.0 ? unlockDialog.open() : sendCode("(ui-lock 0)")
                     }
 
                     // ---- Numbers ----
@@ -658,8 +666,21 @@ Item {
             }
 
             // ================= Setup =================
+            ColumnLayout {
+            spacing: 6
+
+            Text {
+                Layout.fillWidth: true
+                visible: charging
+                color: "#ffb300"
+                wrapMode: Text.WordWrap
+                text: "Stop charging to change the settings."
+            }
+
             ScrollView {
                 id: setupScroll
+                Layout.fillWidth: true
+                Layout.fillHeight: true
                 contentWidth: availableWidth
                 clip: true
 
@@ -671,16 +692,6 @@ Item {
                     Repeater {
                         model: basicGroup
                         delegate: settingGroup
-                    }
-
-                    Button {
-                        Layout.fillWidth: true
-                        Material.background: "#00c853"
-                        Material.foreground: "white"
-                        font.bold: true
-                        text: dirty ? "Save changes" : "Saved"
-                        enabled: dirty
-                        onClicked: sendCode("(ui-save)")
                     }
 
                     Button {
@@ -785,6 +796,47 @@ Item {
                     }
                 }
             }
+
+            // Stays in view while there is something to save
+            Text {
+                Layout.fillWidth: true
+                visible: dirty
+                color: textColor
+                opacity: 0.7
+                font.pointSize: 9
+                wrapMode: Text.WordWrap
+                text: "Changes are in use now. Save them to keep them after a restart."
+            }
+
+            Button {
+                Layout.fillWidth: true
+                visible: dirty
+                enabled: !charging
+                Material.background: "#00c853"
+                Material.foreground: "white"
+                font.bold: true
+                text: "Save changes"
+                onClicked: sendCode("(ui-save)")
+            }
+            }
+        }
+    }
+
+    Dialog {
+        id: unlockDialog
+        modal: true
+        anchors.centerIn: parent
+        width: parent.width - 20
+        title: "Is the charger unplugged?"
+        standardButtons: Dialog.Yes | Dialog.Cancel
+        onAccepted: sendCode("(ui-lock 0)")
+
+        Text {
+            width: unlockDialog.availableWidth
+            color: textColor
+            wrapMode: Text.WordWrap
+            text: "There is still " + vSup.toFixed(1) + " V on the charger phase. Driving the motor " +
+                  "with a charger connected shorts the charger."
         }
     }
 }

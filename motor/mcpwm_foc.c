@@ -2515,6 +2515,54 @@ int mcpwm_foc_hall_detect(float current, uint8_t *hall_table, bool *result) {
  * 1: Success
  *
  */
+
+/**
+ * Boost charging: measure the phase voltage dividers against the battery
+ * divider. The high side FET of a phase that is switching (0 to 2, or -1
+ * for all) is held on for a few ms, which puts the phase at the battery
+ * voltage. That is a steady voltage, so the phase filter and the sample
+ * timing do not matter. Only done when the boost charge package is installed.
+ * The caller switches the outputs off afterwards.
+ */
+static void boost_cal_phase_dividers(int phase) {
+	if (!boost_charge_armed()) {
+		return;
+	}
+
+	static const uint16_t tim_ch[3] = {TIM_Channel_1, TIM_Channel_2, TIM_Channel_3};
+
+	for (int i = 0;i < 3;i++) {
+		if (phase < 0 || phase == i) {
+			TIM_SelectOCxM(TIM1, tim_ch[i], TIM_ForcedAction_Active);
+			TIM_CCxCmd(TIM1, tim_ch[i], TIM_CCx_Enable);
+			TIM_CCxNCmd(TIM1, tim_ch[i], TIM_CCxN_Enable);
+		}
+	}
+	TIM_GenerateEvent(TIM1, TIM_EventSource_COM);
+
+	chThdSleepMilliseconds(2);
+
+	// Two halves after each other, to see that the reading has settled
+	float v_ph[3][2] = {{0.0}};
+	float v_bat = 0.0;
+	for (int n = 0;n < 40;n++) {
+		const int half = n >= 20 ? 1 : 0;
+		v_ph[0][half] += ADC_V_L1_VOLTS / 20.0;
+		v_ph[1][half] += ADC_V_L2_VOLTS / 20.0;
+		v_ph[2][half] += ADC_V_L3_VOLTS / 20.0;
+		if (half) {
+			v_bat += GET_INPUT_VOLTAGE() / 20.0;
+		}
+		chThdSleep(1);
+	}
+
+	for (int i = 0;i < 3;i++) {
+		if (phase < 0 || phase == i) {
+			boost_charge_calibrate(i, v_ph[i][0], v_ph[i][1], v_bat);
+		}
+	}
+}
+
 #ifndef HW_USE_ALTERNATIVE_DC_CAL
 int mcpwm_foc_dc_cal(bool cal_undriven) {
 	// The calibration switches all phases and would short a connected charger
@@ -2585,6 +2633,8 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 		chThdSleep(1);
 	}
 
+	boost_cal_phase_dividers(0);
+
 	// Start PWM on phase 2
 	stop_pwm_hw((motor_all_state_t*)&m_motor_1);
 	PHASE_FILTER_ON();
@@ -2613,6 +2663,8 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 #endif
 		chThdSleep(1);
 	}
+
+	boost_cal_phase_dividers(1);
 
 	// Start PWM on phase 3
 	stop_pwm_hw((motor_all_state_t*)&m_motor_1);
@@ -2643,6 +2695,7 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 		chThdSleep(1);
 	}
 
+	boost_cal_phase_dividers(2);
 	stop_pwm_hw((motor_all_state_t*)&m_motor_1);
 
 	m_motor_1.m_conf->foc_offsets_current[0] = current_sum[0] / samples;
@@ -2653,7 +2706,6 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 	voltage_sum[1] /= samples;
 	voltage_sum[2] /= samples;
 	float v_avg = (voltage_sum[0] + voltage_sum[1] + voltage_sum[2]) / 3.0;
-	boost_charge_calibrate(v_avg, mc_interface_get_input_voltage_filtered());
 
 	m_motor_1.m_conf->foc_offsets_voltage[0] = voltage_sum[0] - v_avg;
 	m_motor_1.m_conf->foc_offsets_voltage[1] = voltage_sum[1] - v_avg;
@@ -2797,6 +2849,8 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 		chThdSleep(1);
 	}	
 
+	boost_cal_phase_dividers(-1);
+
 	stop_pwm_hw((motor_all_state_t*)&m_motor_1);
 
 	m_motor_1.m_conf->foc_offsets_current[0] = current_sum[0] / samples;
@@ -2807,7 +2861,6 @@ int mcpwm_foc_dc_cal(bool cal_undriven) {
 	voltage_sum[1] /= samples;
 	voltage_sum[2] /= samples;
 	float v_avg = (voltage_sum[0] + voltage_sum[1] + voltage_sum[2]) / 3.0;
-	boost_charge_calibrate(v_avg, mc_interface_get_input_voltage_filtered());
 
 	m_motor_1.m_conf->foc_offsets_voltage[0] = voltage_sum[0] - v_avg;
 	m_motor_1.m_conf->foc_offsets_voltage[1] = voltage_sum[1] - v_avg;

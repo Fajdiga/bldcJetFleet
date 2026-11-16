@@ -18,13 +18,16 @@
 #define DT			(1.0 / FS)
 
 float sim_v_phase[3] = {0.0, 0.0, 0.0};
+float sim_ph_gain[3] = {1.0, 1.0, 1.0};
 float sim_v_bat = 44.0;
+int sim_marker = 0;
 
 static mc_configuration conf = {MOTOR_TYPE_FOC, {2040.0, 2050.0, 2047.0}, 150e-6 * 1000.0, 0.060 * 1000.0, 150e-6};
 static mc_fault_code fault = FAULT_CODE_NONE;
 static float v_supply = 0.0;	// 0 = unplugged
 static int floating = 0;		// Phase voltage from leakage only, no current can flow
 static float i_l = 0.0;			// Winding current, supply to battery
+static float i_sens_ofs = 0.0;	// Offset error of one leg current sensor
 static boost_out_t out = BOOST_OUT_UNLOCKED;
 
 const volatile mc_configuration* mc_interface_get_configuration(void) { return &conf; }
@@ -45,7 +48,7 @@ static void step(float refresh) {
 	sim_v_phase[2] = sim_v_phase[1];
 
 	float duty = 0.0;
-	out = boost_charge_isr(0.0, -i_l / 2.0, -i_l / 2.0, true, DT, &duty);
+	out = boost_charge_isr(0.0, -i_l / 2.0 + i_sens_ofs, -i_l / 2.0, true, DT, &duty);
 
 	if (floating) {
 		i_l = 0.0;
@@ -72,10 +75,58 @@ static boost_status_t status(void) {
 	return st;
 }
 
+// The offset calibration: each phase is held at the battery voltage. With
+// settle != 1 the two readings differ, as if the phase filter was still moving.
+static void calibrate(float settle) {
+	for (int ph = 0;ph < 3;ph++) {
+		sim_v_phase[ph] = 44.0;
+		const float v = ph == 0 ? ADC_V_L1_VOLTS : (ph == 1 ? ADC_V_L2_VOLTS : ADC_V_L3_VOLTS);
+		boost_charge_calibrate(ph, settle * v, v, 44.0);
+	}
+
+	float duty = 0.0;
+	sim_v_phase[0] = sim_v_phase[1] = sim_v_phase[2] = 30.0;
+	boost_charge_isr(0.0, 0.0, 0.0, true, DT, &duty);
+	sim_v_phase[0] = sim_v_phase[1] = sim_v_phase[2] = 0.0;
+}
+
 int main(void) {
 	const boost_config_t bc = {
 			.i_max = 10.0, .i_slew = 2.0, .i_trip = 20.0, .v_bat_max = 51.0,
 			.v_sup_min = 30.0, .v_sup_max = 38.0, .kp = 0.0, .ki = 0.0, .phase = 0};
+
+	// Divider calibration. A reading that is still settling is thrown away.
+	sim_ph_gain[0] = 1.03;
+	sim_ph_gain[1] = 0.97;
+	sim_ph_gain[2] = 1.01;
+	calibrate(0.99);
+	assert(fabsf(status().v_phase[0] - 30.0 * 1.03) < 0.01);
+
+	// Settled: every phase gets its own correction
+	calibrate(1.0);
+	for (int ph = 0;ph < 3;ph++) {
+		assert(fabsf(status().v_phase[ph] - 30.0) < 0.01);
+	}
+
+	// Package not installed: a charger is not looked for, at boot or later
+	sim_v_phase[0] = sim_v_phase[1] = sim_v_phase[2] = 34.0;
+	assert(!boost_charge_armed() && !boost_charge_boot_check());
+	v_supply = 34.0;
+	run(1.0, -1.0);
+	assert(out == BOOST_OUT_UNLOCKED && !boost_charge_locked());
+
+	// Marker left behind by a removed package: the boot lock is given up
+	sim_marker = BOOST_EEPROM_ARM_MAGIC;
+	assert(boost_charge_armed() && boost_charge_boot_check());
+	run(4.0, -1.0);
+	assert(boost_charge_locked());
+	run(1.5, -1.0);
+	assert(out == BOOST_OUT_UNLOCKED && !boost_charge_locked());
+
+	// The script of the package arms the detection
+	v_supply = 0.0;
+	sim_v_phase[0] = sim_v_phase[1] = sim_v_phase[2] = 0.0;
+	boost_charge_arm();
 
 	// No charger: boot check does not lock and the motor stays available
 	assert(!boost_charge_boot_check());
@@ -105,6 +156,17 @@ int main(void) {
 	assert(out == BOOST_OUT_SWITCHING);
 	assert(fabsf(i_l - 5.0) < 0.05 && i_peak < 5.5);
 	assert(fabsf(status().duty - (34.0 - 5.0 * R_TOT) / 44.0) < 0.002);
+
+	// A current sensor that reads 0.8 A off is zeroed while the FETs are off
+	run(6.0, 0.0);
+	assert(out == BOOST_OUT_OFF);
+	i_sens_ofs = 0.8;
+	run(1.0, -1.0);
+	assert(fabsf(status().i_in) < 0.02);
+	run(5.0, 1.0);
+	printf("1 A setpoint, sensor 0.8 A off: i = %.3f A
+", i_l);
+	assert(out == BOOST_OUT_SWITCHING && fabsf(i_l - 1.0) < 0.05);
 
 	// The setpoint is clamped to the configured maximum
 	run(5.0, 50.0);

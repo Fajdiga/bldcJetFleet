@@ -13,16 +13,26 @@
 
 // Simulated hardware, owned by test.c
 extern float sim_v_phase[3];
+extern float sim_ph_gain[3];	// Divider error of each phase
 extern float sim_v_bat;
 
-#define ADC_V_L1_VOLTS			(sim_v_phase[0] / PH_DIV)
-#define ADC_V_L2_VOLTS			(sim_v_phase[1] / PH_DIV)
-#define ADC_V_L3_VOLTS			(sim_v_phase[2] / PH_DIV)
+#define ADC_V_L1_VOLTS			(sim_v_phase[0] * sim_ph_gain[0] / PH_DIV)
+#define ADC_V_L2_VOLTS			(sim_v_phase[1] * sim_ph_gain[1] / PH_DIV)
+#define ADC_V_L3_VOLTS			(sim_v_phase[2] * sim_ph_gain[2] / PH_DIV)
 #define GET_INPUT_VOLTAGE()		(sim_v_bat)
 
 #define MCCONF_FOC_OFFSETS_CURRENT_0	2048.0
 #define MCCONF_FOC_OFFSETS_CURRENT_1	2048.0
 #define MCCONF_FOC_OFFSETS_CURRENT_2	2048.0
+
+// Lisp eeprom marker and stored script of the boost charge package
+extern int sim_marker;
+typedef union { int32_t as_i32; float as_float; } eeprom_var;
+#define CODE_IND_LISP			1
+static inline uint32_t flash_helper_code_size(int ind) { (void)ind; return 100; }
+static inline bool conf_general_read_eeprom_var_custom(eeprom_var *v, int address) {
+	(void)address; v->as_i32 = sim_marker; return true;
+}
 
 typedef enum { MOTOR_TYPE_BLDC = 0, MOTOR_TYPE_DC, MOTOR_TYPE_FOC } mc_motor_type;
 typedef enum { MC_STATE_OFF = 0, MC_STATE_RUNNING } mc_state;

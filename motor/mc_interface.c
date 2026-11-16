@@ -2738,7 +2738,8 @@ static void run_timer_tasks(volatile motor_if_state_t *motor) {
 	bool too_high_duty_for_unbalance_check = false;
 #else
 	const float duty_now_abs = fabsf(mc_interface_get_duty_cycle_now());
-	bool too_high_duty_for_unbalance_check = duty_now_abs > 0.8;
+	// In boost charging the supply phase current does not pass a low side shunt
+	bool too_high_duty_for_unbalance_check = duty_now_abs > 0.8 || boost_charge_locked();
 #endif
 
 	if (motor->m_conf.foc_current_sample_mode != FOC_CURRENT_SAMPLE_MODE_HIGH_CURRENT  &&
