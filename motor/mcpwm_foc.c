@@ -3182,6 +3182,17 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 			} else if (motor_now->m_pwm_mode != FOC_PWM_DISABLED || !outputs_off) {
 				stop_pwm_hw(motor_now);
 			}
+
+			// The motor is held off, so the FOC calculations below have nothing
+			// to do. Skipping them leaves the CPU to the threads, the charge
+			// script among them, at high switching frequencies.
+#ifdef HW_HAS_DUAL_MOTORS
+			mc_interface_mc_timer_isr(is_second_motor, dt);
+#else
+			mc_interface_mc_timer_isr(false, dt);
+#endif
+			m_isr_motor = 0;
+			return;
 		}
 	}
 
@@ -5377,7 +5388,7 @@ static void stop_pwm_hw(motor_all_state_t *motor) {
  * Boost charging: the supply phase stays off and the two other legs switch.
  */
 static void boost_pwm_hw(motor_all_state_t *motor) {
-	if (!boost_charge_locked() || motor != &m_motor_1) {
+	if (!(boost_charge_locked() || boost_charge_zero_sweeping()) || motor != &m_motor_1) {
 		stop_pwm_hw(motor);
 		return;
 	}

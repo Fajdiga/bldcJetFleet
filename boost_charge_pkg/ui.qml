@@ -65,7 +65,9 @@ Item {
         {label: "Current loop Ki (0 = from motor)", suffix: "", dec: 2, from: 0, to: 5000, step: 1},
         {label: "Charger phase", suffix: "", dec: 0, from: 1, to: 3, step: 1},
         {label: "Over-current trip (0 = automatic)", suffix: " A", dec: 1, from: 0, to: 400, step: 1},
-        {label: "Start automatically", suffix: "", dec: 0, from: 0, to: 1, step: 1}
+        {label: "Start automatically", suffix: "", dec: 0, from: 0, to: 1, step: 1},
+        {label: "Charger voltage correction while charging (0 = board default)", suffix: " x", dec: 4, from: 0, to: 1.2, step: 0.001},
+        {label: "Battery voltage correction while charging (0 = board default)", suffix: " x", dec: 4, from: 0, to: 1.2, step: 0.001}
     ]
     readonly property int idxPhase: 20
     readonly property int idxAuto: 22
@@ -74,7 +76,7 @@ Item {
     readonly property var advancedGroups: [
         {title: "Charger", color: "#ffb300", basic: false, items: [3, 4, 7]},
         {title: "Limits", color: "#ef5350", basic: false, items: [2, 5, 8, 9, 10, 11, 12, 13, 14]},
-        {title: "Converter", color: "#29b6f6", basic: false, items: [6, 15, 16, 17, 18, 19, 21]}]
+        {title: "Converter", color: "#29b6f6", basic: false, items: [6, 15, 16, 17, 18, 19, 21, 23, 24]}]
 
     property bool settingsLoaded: false
     property bool loading: false

@@ -59,6 +59,8 @@ typedef struct {
 	float kp;			// Current loop P gain [V/A], 0 = derive from motor config
 	float ki;			// Current loop I gain [V/(A*s)], 0 = derive from motor config
 	int phase;			// Supply phase, 0 to 2
+	float k_sup_sw;		// Supply voltage reading correction while switching, 0 = hardware default
+	float k_bat_sw;		// Battery voltage reading correction while switching, 0 = hardware default
 } boost_config_t;
 
 typedef struct {
@@ -121,5 +123,6 @@ boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float
 
 // Supply phase, 0 to 2
 int boost_charge_phase(void);
+bool boost_charge_zero_sweeping(void);
 
 #endif /* MOTOR_BOOST_CHARGE_H_ */

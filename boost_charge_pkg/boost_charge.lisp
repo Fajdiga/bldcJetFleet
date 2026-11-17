@@ -33,13 +33,15 @@
         kp           ; Current loop gains, 0 = from the motor configuration
         ki
         phase        ; Motor phase the supply is connected to, 1 to 3
-        i-trip       ; Over-current trip [A], 0 = 1.5 * i-max + 5
+        i-trip       ; Over-current trip [A], 0 = 1.5 * i-max + 5 + worst case ripple
         auto-start   ; 1 = start as soon as the charger is plugged in
+        v-sup-k      ; Supply voltage reading correction while switching, 0 = board default
+        v-bat-k      ; Battery voltage reading correction while switching, 0 = board default
 ))
 
 (def settings (list
         5.0 4.2 0.5 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0
-        0.0 45.0 80.0 80.0 2.0 2.0 1.0 0.0 0.0 1.0 0.0 0.0))
+        0.0 45.0 80.0 80.0 2.0 2.0 1.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0))
 
 ; ---- State ----
 
@@ -157,12 +159,20 @@
             1.0)
 })
 
+; Worst case ripple of the winding current, at a duty of 0.5. The current can
+; start that far off its average (see the trip below).
+(defun ripple-max () {
+        (var f-sw (if (> (s 'f-sw) 0.0) (* 1000.0 (s 'f-sw)) (/ (conf-get 'foc-f-zv) 2.0)))
+        (var l-tot (* 1.5e-6 (conf-get 'foc-motor-l)))
+        (if (> l-tot 0.0) (/ v-bat-now (* 4.0 l-tot f-sw)) 0.0)
+})
+
 (defun apply-config () {
         (var i-max (s 'i-max))
         (boost-config
             i-max
             (s 'i-slew)
-            (if (> (s 'i-trip) 0.0) (s 'i-trip) (+ (* 1.5 i-max) 5.0))
+            (if (> (s 'i-trip) 0.0) (s 'i-trip) (+ (* 1.5 i-max) 5.0 (ripple-max)))
             ; The trip runs on the ESC voltage reading, the limit is in real volts
             (* (v-esc-scale) (if (> (s 'v-bat-max) 0.0) (s 'v-bat-max) (* (cells) (+ (s 'cell-target) 0.07))))
             win-min
@@ -170,6 +180,8 @@
             (s 'kp)
             (s 'ki)
             (- (to-i (s 'phase)) 1)
+            (s 'v-sup-k)
+            (s 'v-bat-k)
         )
 })
 
@@ -219,9 +231,10 @@
         lim
 })
 
-; A supply is on the phase. Without a set window anything above 5 V counts.
+; A supply is on the phase. Without a set window the firmware charger detection
+; threshold is used: the phases float to around 12 V through leakage.
 (defun sup-present (v-sup)
-    (and (> v-sup (if (> (s 'v-sup-min) 0.0) (s 'v-sup-min) 5.0))
+    (and (> v-sup (if (> (s 'v-sup-min) 0.0) (s 'v-sup-min) (max2 15.0 (* 0.25 v-bat-now))))
         (or (<= (s 'v-sup-max) 0.0) (<= v-sup (s 'v-sup-max)))
 ))
 

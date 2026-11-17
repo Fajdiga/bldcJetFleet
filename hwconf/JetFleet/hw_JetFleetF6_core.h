@@ -234,6 +234,15 @@
     #define MCCONF_FOC_F_ZV				    30000.0
     #endif
     
+    // Boost charging: the low side shunts read about this much late on a
+    // current ramp (shunt inductance). Measured on the bench: 30 kHz, 68 V into
+    // 125 V, firmware 0.80 A against 0.84 A on the supply.
+    #define BOOST_I_SENSE_LAG				3.3e-6
+    // Supply and battery readings while the boost legs switch, against a lab
+    // supply display at 66 V into 124 V, 30 kHz.
+    #define BOOST_V_SUP_SW_K				1.020
+    #define BOOST_V_BAT_SW_K				1.005
+
     #ifndef MCCONF_FOC_SAMPLE_V0_V7
     #define MCCONF_FOC_SAMPLE_V0_V7			false	// Run control loop in both v0 and v7 (requires phase shunts)
     #endif

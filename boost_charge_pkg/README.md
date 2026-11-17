@@ -4,7 +4,18 @@ Charges the battery through the motor windings. The supply + goes to one motor p
 
 This package only works on firmware built with `motor/boost_charge.c`. On other firmware the script stops with an error at the first `boost-status` call.
 
-**Not bench-tested yet. Start every test with a lab supply limited to 1 to 2 A.**
+**Bench-tested on one JetFleet F6 only (lab supply, 0.8 to 3 A into 124 V). Start every new setup with a lab supply limited to 1 to 2 A.**
+
+## Charger connection hardware
+
+The winding current has a ripple of 10 to 40 A peak to peak at the switching frequency. It has to come from a capacitor bank at the phase connection, not from the charger and its leads:
+
+- **Capacitor bank between the charger + and − at the phase connection**: at least 1000 µF, low ESR, rated well above the charger voltage, with short thick leads. Without it the phase voltage swings several volts each period, the current reading is wrong by an amp or more (it read 3 A where 1.9 A flowed), and the charger and the loop can oscillate.
+- **Bleeder resistor across the bank** (for example 10 kΩ, 2 W), so that it is empty a few seconds after the charger is unplugged or switched off.
+- **Put the bank in the charger cable or adapter**, not on the motor phase. A capacitor on a motor phase is shorted by every PWM edge while driving.
+- A fast fuse in the supply + lead.
+
+Never let the ESC boot while a charged capacitor bank is on the phase and the charger is off: at boot the offset calibration switches each phase to the battery. The firmware now skips the calibration when any phase is above 15 % of the battery voltage (at least 15 V), but an older firmware switched the battery straight onto the bank, which can destroy the high side FET.
 
 ## Rules
 

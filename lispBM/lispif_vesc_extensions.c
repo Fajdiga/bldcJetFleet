@@ -1942,9 +1942,17 @@ static lbm_value ext_boost_arm(lbm_value *args, lbm_uint argn) {
 
 // (boost-config i-max i-slew i-trip v-bat-max v-sup-min v-sup-max kp ki phase)
 static lbm_value ext_boost_config(lbm_value *args, lbm_uint argn) {
-	LBM_CHECK_ARGN_NUMBER(9);
+	// 9 arguments, or 11 with the voltage reading corrections while switching
+	if (argn != 11) {
+		LBM_CHECK_ARGN_NUMBER(9);
+	}
+	if (!lbm_check_number_all(args, argn)) {
+		return ENC_SYM_TERROR;
+	}
 
 	boost_config_t conf;
+	conf.k_sup_sw = argn == 11 ? lbm_dec_as_float(args[9]) : 0.0;
+	conf.k_bat_sw = argn == 11 ? lbm_dec_as_float(args[10]) : 0.0;
 	conf.i_max = lbm_dec_as_float(args[0]);
 	conf.i_slew = lbm_dec_as_float(args[1]);
 	conf.i_trip = lbm_dec_as_float(args[2]);
