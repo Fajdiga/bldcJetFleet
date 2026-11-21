@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #define HW_HAS_3_SHUNTS
+#define HW_HAS_PHASE_SHUNTS
 #define VIN_R1					300000.0
 #define VIN_R2					5100.0
 #define ADC_VOLTS_PH_FACTOR		1.0
@@ -44,6 +45,8 @@ typedef struct {
 	float foc_current_kp;
 	float foc_current_ki;
 	float foc_motor_l;
+	float foc_motor_ld_lq_diff;
+	float foc_f_zv;
 } mc_configuration;
 
 const volatile mc_configuration* mc_interface_get_configuration(void);

@@ -55,7 +55,7 @@ typedef struct {
 	float i_trip;		// Overcurrent trip for input and leg currents [A]
 	float v_bat_max;	// Battery over-voltage trip [V]
 	float v_sup_min;	// Supply under-voltage trip [V]
-	float v_sup_max;	// Supply over-voltage trip [V]
+	float v_sup_max;	// Supply over-voltage trip [V], 0 = follows the supply (BOOST_SUP_OV_REL)
 	float kp;			// Current loop P gain [V/A], 0 = derive from motor config
 	float ki;			// Current loop I gain [V/(A*s)], 0 = derive from motor config
 	int phase;			// Supply phase, 0 to 2
@@ -117,9 +117,13 @@ void boost_charge_clear_trip(void);
 void boost_charge_get_status(boost_status_t *status);
 const char* boost_charge_trip_str(boost_trip_t trip);
 
-// Runs in the PWM interrupt, every cycle. The phase currents are in ampere,
-// positive out of the inverter. duty_hs is the high side duty for all legs.
-boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float dt, float *duty_hs);
+// Runs in the sample interrupt. The phase currents are in ampere, positive out
+// of the inverter. sample_v7 is true when they were sampled in the middle of
+// the high side on time (counter bottom), which is only done on hardware with
+// phase current sensors. dt is the time since the last call. duty_hs is the
+// high side duty for all legs.
+boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, bool sample_v7,
+		float dt, float *duty_hs);
 
 // Supply phase, 0 to 2
 int boost_charge_phase(void);

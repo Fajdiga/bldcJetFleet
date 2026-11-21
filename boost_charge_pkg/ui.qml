@@ -49,7 +49,7 @@ Item {
         {label: "Lowest charger voltage (0 = automatic)", suffix: " V", dec: 1, from: 0, to: 400, step: 0.5},
         {label: "Highest charger voltage (0 = automatic)", suffix: " V", dec: 1, from: 0, to: 400, step: 0.5},
         {label: "Pack voltage limit (0 = automatic)", suffix: " V", dec: 1, from: 0, to: 400, step: 0.5},
-        {label: "Switching frequency (0 = motor setting)", suffix: " kHz", dec: 1, from: 0, to: 40, step: 1},
+        {label: "Switching frequency (0 = motor setting)", suffix: " kHz", dec: 1, from: 0, to: 200, step: 1},
         {label: "Charger power limit (0 = off)", suffix: " W", dec: 0, from: 0, to: 20000, step: 50},
         {label: "Battery current limit (0 = off)", suffix: " A", dec: 1, from: 0, to: 200, step: 0.5},
         {label: "Stop after (0 = off)", suffix: " Ah", dec: 1, from: 0, to: 1000, step: 1},

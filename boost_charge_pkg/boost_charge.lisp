@@ -73,8 +73,7 @@
 (def go-req false)   ; Start was pressed
 (def use-bms true)   ; false = no BMS on the bus, charge on the pack voltage
 (def v-bat-now 0.0)
-(def win-min 0.0)    ; Supply window in use
-(def win-max 0.0)
+(def v-sup-ref 0.0)  ; Supply voltage the automatic lower limit follows
 (def f-zv-orig (conf-get 'foc-f-zv))
 
 ; The functions and tables are stored in flash, the heap is small
@@ -175,8 +174,9 @@
             (if (> (s 'i-trip) 0.0) (s 'i-trip) (+ (* 1.5 i-max) 5.0 (ripple-max)))
             ; The trip runs on the ESC voltage reading, the limit is in real volts
             (* (v-esc-scale) (if (> (s 'v-bat-max) 0.0) (s 'v-bat-max) (* (cells) (+ (s 'cell-target) 0.07))))
-            win-min
-            win-max
+            (sup-floor)
+            ; 0 = the firmware trips 10 % above the supply voltage and follows it up
+            (s 'v-sup-max)
             (s 'kp)
             (s 'ki)
             (- (to-i (s 'phase)) 1)
@@ -226,15 +226,19 @@
             (setq lim (min2 lim (/ (* (s 'i-bat-max) v-bat) (max2 v-sup 1.0)))))
         (setq lim (* lim (derate (get-temp-mot) (s 't-mot-max))))
         (setq lim (* lim (derate (get-temp-fet) (s 't-fet-max))))
-        ; Back off when the supply sags towards its lower limit
-        (setq lim (* lim (clamp (/ (- v-sup win-min) (max2 (* 0.05 win-min) 0.1)) 0.0 1.0)))
+        ; Back off when the supply sags towards its lower limit: the set one, or 80 %
+        ; of the supply voltage, which follows a supply that is turned up or down
+        (var lo (if (> (s 'v-sup-min) 0.0) (s 'v-sup-min) (* 0.8 v-sup-ref)))
+        (setq lim (* lim (clamp (/ (- v-sup lo) (max2 (* 0.05 lo) 0.1)) 0.0 1.0)))
         lim
 })
 
 ; A supply is on the phase. Without a set window the firmware charger detection
 ; threshold is used: the phases float to around 12 V through leakage.
+(defun sup-floor () (if (> (s 'v-sup-min) 0.0) (s 'v-sup-min) (max2 15.0 (* 0.25 v-bat-now))))
+
 (defun sup-present (v-sup)
-    (and (> v-sup (if (> (s 'v-sup-min) 0.0) (s 'v-sup-min) (max2 15.0 (* 0.25 v-bat-now))))
+    (and (> v-sup (sup-floor))
         (or (<= (s 'v-sup-max) 0.0) (<= v-sup (s 'v-sup-max)))
 ))
 
@@ -242,8 +246,7 @@
         (setq go-req false)
         ; A BMS that was heard in the last 30 s must stay alive for the whole charge
         (setq use-bms (< (get-bms-val 'bms-msg-age) 30.0))
-        (setq win-min (if (> (s 'v-sup-min) 0.0) (s 'v-sup-min) (* 0.8 v-sup)))
-        (setq win-max (if (> (s 'v-sup-max) 0.0) (s 'v-sup-max) (+ (* 1.1 v-sup) 1.0)))
+        (setq v-sup-ref v-sup)
         ; Without cell checks the pack limit is the only stop
         (if (and (> i-manual 0.0) (<= (s 'v-bat-max) 0.0))
             (fault "set the pack voltage limit before a bench test")
@@ -301,6 +304,9 @@
             (fault (ix trip-names trip)))
 
         (if (charging) {
+                ; Up at once, down within about 10 s (a sag under load recovers sooner)
+                (setq v-sup-ref (if (> v-sup v-sup-ref) v-sup
+                        (+ v-sup-ref (* (- v-sup v-sup-ref) (min2 (/ dt 10.0) 1.0)))))
                 (setq chg-secs (+ chg-secs dt))
                 (setq wh (+ wh (/ (* v-sup i-in dt) 3600.0)))
                 ; Battery side estimate, losses not included

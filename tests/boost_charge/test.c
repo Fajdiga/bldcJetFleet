@@ -28,6 +28,7 @@ static float v_supply = 0.0;	// 0 = unplugged
 static int floating = 0;		// Phase voltage from leakage only, no current can flow
 static float i_l = 0.0;			// Winding current, supply to battery
 static float i_sens_ofs = 0.0;	// Offset error of one leg current sensor
+static float sens_lag = 0.0;	// Delay of the current sensors [s]
 static boost_out_t out = BOOST_OUT_UNLOCKED;
 
 const volatile mc_configuration* mc_interface_get_configuration(void) { return &conf; }
@@ -47,8 +48,18 @@ static void step(float refresh) {
 	sim_v_phase[1] = out == BOOST_OUT_SWITCHING ? 0.0 : v_supply;
 	sim_v_phase[2] = sim_v_phase[1];
 
+	// Samples alternate between the middle of the low side (V0, current
+	// rising) and of the high side on time (V7, falling). A sensor delay
+	// reads the current from that much earlier.
+	static bool v7 = false;
+	v7 = !v7;
+	float i_read = i_l;
+	if (out == BOOST_OUT_SWITCHING) {
+		i_read += v7 ? (sim_v_bat - v_supply) / L_TOT * sens_lag : -v_supply / L_TOT * sens_lag;
+	}
+
 	float duty = 0.0;
-	out = boost_charge_isr(0.0, -i_l / 2.0 + i_sens_ofs, -i_l / 2.0, true, DT, &duty);
+	out = boost_charge_isr(0.0, -i_read / 2.0 + i_sens_ofs, -i_read / 2.0, true, v7, DT, &duty);
 
 	if (floating) {
 		i_l = 0.0;
@@ -86,7 +97,7 @@ static void calibrate(float settle) {
 
 	float duty = 0.0;
 	sim_v_phase[0] = sim_v_phase[1] = sim_v_phase[2] = 30.0;
-	boost_charge_isr(0.0, 0.0, 0.0, true, DT, &duty);
+	boost_charge_isr(0.0, 0.0, 0.0, true, false, DT, &duty);
 	sim_v_phase[0] = sim_v_phase[1] = sim_v_phase[2] = 0.0;
 }
 
@@ -164,9 +175,38 @@ int main(void) {
 	run(1.0, -1.0);
 	assert(fabsf(status().i_in) < 0.02);
 	run(5.0, 1.0);
-	printf("1 A setpoint, sensor 0.8 A off: i = %.3f A
-", i_l);
+	printf("1 A setpoint, sensor 0.8 A off: i = %.3f A\n", i_l);
 	assert(out == BOOST_OUT_SWITCHING && fabsf(i_l - 1.0) < 0.05);
+
+	// A 2 us sensor delay reads 0.3 A low in V0 alone. V0 and V7 weighted
+	// with the duty cancel it.
+	i_sens_ofs = 0.0;
+	run(6.0, 0.0);
+	sens_lag = 2e-6;
+	run(5.0, 5.0);
+	printf("5 A setpoint, 2 us sensor delay: i = %.3f A\n", i_l);
+	assert(out == BOOST_OUT_SWITCHING && fabsf(i_l - 5.0) < 0.03);
+	sens_lag = 0.0;
+
+	// The supply is turned up while charging, with the over-voltage trip
+	// following it (v_sup_max 0): the current stays where it was
+	run(6.0, 0.0);
+	const boost_config_t bc_follow = {
+			.i_max = 10.0, .i_slew = 2.0, .i_trip = 20.0, .v_bat_max = 51.0,
+			.v_sup_min = 30.0, .v_sup_max = 0.0, .kp = 0.0, .ki = 0.0, .phase = 0};
+	boost_charge_configure(&bc_follow);
+	run(5.0, 5.0);
+	for (int i = 0;i < 25;i++) {
+		v_supply += 0.1;	// 34 to 36.5 V in 0.25 s
+		run(0.01, 5.0);
+	}
+	run(2.0, 5.0);
+	printf("Supply turned up to %.1f V: i = %.3f A\n", v_supply, i_l);
+	assert(out == BOOST_OUT_SWITCHING && status().trip == BOOST_TRIP_NONE && fabsf(i_l - 5.0) < 0.1);
+	run(6.0, 0.0);
+	v_supply = 34.0;
+	run(1.0, -1.0);
+	boost_charge_configure(&bc);
 
 	// The setpoint is clamped to the configured maximum
 	run(5.0, 50.0);

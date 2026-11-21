@@ -144,10 +144,12 @@ static volatile float m_sense_lag = BOOST_I_SENSE_LAG;
 
 // Interrupt samples for boost_trace: the first BOOST_TRACE_START after each
 // start, then every BOOST_TRACE_DIV-th sample in a ring, frozen at a trip.
+// Odd, so that the ring holds V0 and V7 samples alike on phase sensors.
 #define BOOST_TRACE_LEN			64
 #define BOOST_TRACE_START		32
-#define BOOST_TRACE_DIV			64
+#define BOOST_TRACE_DIV			63
 typedef struct {
+	bool v7;			// Leg currents sampled in V7 (else V0)
 	float t_active;
 	float i_leg_1;
 	float i_leg_2;
@@ -182,7 +184,24 @@ static volatile float m_zsweep_sum = 0.0;
 // current can not pump it up.
 #define BOOST_V_RISE			1.0		// V
 #define BOOST_RISE_GAIN			2.0		// A/V
-static volatile float m_v_open = 0.0;	// Supply voltage before the start
+static volatile float m_v_open = 0.0;	// Supply voltage before the start, see BOOST_OPEN_TRACK_A
+// A supply that is turned up while charging is followed: only current into the
+// supply can pump it up, so while the input current reads clearly forward (more
+// than the worst case sensor error) a higher supply voltage is real and becomes
+// the new m_v_open. Without this the guard above fought the higher voltage.
+#ifndef BOOST_OPEN_TRACK_A
+#define BOOST_OPEN_TRACK_A		1.0
+#endif
+// Supply over-voltage trip when v_sup_max is 0: relative to m_v_open, so that
+// it follows the supply as well.
+#define BOOST_SUP_OV_REL		1.1
+#define BOOST_SUP_OV_ADD		1.0		// V
+
+#ifdef HW_HAS_PHASE_SHUNTS
+// Latest leg current samples in V0 and V7, see boost_charge_isr
+static volatile float m_i_v0[2] = {0.0, 0.0};
+static volatile float m_i_v7[2] = {0.0, 0.0};
+#endif
 
 // While the legs switch, the phase and battery voltage readings can be off by
 // a few percent (coupling from the switching phases into the sense lines),
@@ -272,10 +291,18 @@ bool boost_charge_armed(void) {
 
 void boost_charge_arm(void) {
 	m_armed = true;
-	// Measure the sensor zero while switching once, if nothing is connected
+#ifndef HW_HAS_PHASE_SHUNTS
+	// Measure the sensor zero while switching once, if nothing is connected.
+	// Only low side shunts read differently while switching.
 	if (!m_ztab_ok) {
 		m_zsweep_req = true;
 	}
+#endif
+}
+
+// Supply over-voltage trip level
+static float sup_max(void) {
+	return m_conf.v_sup_max > 0.0 ? m_conf.v_sup_max : BOOST_SUP_OV_REL * m_v_open + BOOST_SUP_OV_ADD;
 }
 
 bool boost_charge_zero_sweeping(void) {
@@ -397,6 +424,7 @@ bool boost_charge_set_lock(bool lock) {
 		m_manual_lock = true;
 		m_lock = true;
 
+#ifndef HW_HAS_PHASE_SHUNTS
 		// Nothing on the phases (they float to around 12 V): measure the
 		// sensor zero while switching, see m_ztab.
 		const float v_max = fmaxf(m_v_phase[0], fmaxf(m_v_phase[1], m_v_phase[2]));
@@ -406,6 +434,7 @@ bool boost_charge_set_lock(bool lock) {
 			m_zsweep_sum = 0.0;
 			m_zsweep = 0;
 		}
+#endif
 		return true;
 	} else {
 		if (!m_lock) {
@@ -450,7 +479,7 @@ bool boost_charge_set_current(float current) {
 
 		bool conf_ok = m_conf.phase >= 0 && m_conf.phase <= 2 && m_conf.i_max > 0.0 &&
 				m_conf.i_slew > 0.0 && m_conf.i_trip > 0.0 && m_conf.v_bat_max > 0.0 &&
-				m_conf.v_sup_max > m_conf.v_sup_min;
+				(m_conf.v_sup_max <= 0.0 || m_conf.v_sup_max > m_conf.v_sup_min);
 
 #ifndef HW_HAS_3_SHUNTS
 		// Without a third shunt both boost legs are only measured when the
@@ -471,7 +500,7 @@ bool boost_charge_set_current(float current) {
 			trip(BOOST_TRIP_FAULT);
 		} else if (m_v_sup < m_conf.v_sup_min) {
 			trip(BOOST_TRIP_SUPPLY_LOW);
-		} else if (m_v_sup > m_conf.v_sup_max) {
+		} else if (m_conf.v_sup_max > 0.0 && m_v_sup > m_conf.v_sup_max) {
 			trip(BOOST_TRIP_SUPPLY_OV);
 		} else if (supply_above_ratio(m_v_sup, m_v_bat)) {
 			trip(BOOST_TRIP_SUPPLY_HIGH);
@@ -555,9 +584,10 @@ const char* boost_charge_trip_str(boost_trip_t reason) {
 	return "unknown";
 }
 
-boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float dt, float *duty_hs) {
+boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, bool sample_v7,
+		float dt, float *duty_hs) {
 #ifdef BOOST_UNSUPPORTED
-	(void)ia; (void)ib; (void)ic; (void)motor_off; (void)dt; (void)duty_hs;
+	(void)ia; (void)ib; (void)ic; (void)motor_off; (void)sample_v7; (void)dt; (void)duty_hs;
 	return BOOST_OUT_UNLOCKED;
 #else
 	float v[3];
@@ -651,6 +681,31 @@ boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float
 	LP(m_v_sup, v[phase >= 0 && phase <= 2 ? phase : 0], 0.05);
 	const float v_sup = m_v_sup;
 
+	// This sample as it was read, for the trace
+	const float i_smp_1 = i_leg_1;
+	const float i_smp_2 = i_leg_2;
+
+#ifdef HW_HAS_PHASE_SHUNTS
+	// Phase current sensors read at any time, so the samples alternate between
+	// the middle of the low side on time (V0, the current rises) and of the
+	// high side on time (V7, it falls), see boost_rcr in mcpwm_foc.c. Both see
+	// the average current. Weighted with the duty of the other state, any delay
+	// of the sensor or of the sample point cancels, as in steady state the rise
+	// over the low side time equals the fall over the high side time:
+	// (1 - d) * v_sup = d * (v_bat - v_sup). No lag setting needed.
+	if (!m_active || sample_v7) {
+		m_i_v7[0] = i_leg_1;
+		m_i_v7[1] = i_leg_2;
+	}
+	if (!m_active || !sample_v7) {
+		m_i_v0[0] = i_leg_1;
+		m_i_v0[1] = i_leg_2;
+	}
+	i_leg_1 = (1.0 - duty_applied) * m_i_v0[0] + duty_applied * m_i_v7[0];
+	i_leg_2 = (1.0 - duty_applied) * m_i_v0[1] + duty_applied * m_i_v7[1];
+#else
+	(void)sample_v7;
+
 	// The current is sampled in the middle of the low side on time, where it
 	// rises at v_sup / l_tot, half of that in each leg. A sensor that lags,
 	// such as a shunt with its own inductance (it reads R * i + L * di/dt), then
@@ -665,6 +720,7 @@ boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float
 		i_leg_1 += leg_ramp;	// Legs read the current into the motor, it falls here
 		i_leg_2 += leg_ramp;
 	}
+#endif
 
 	// The input current returns through the two boost legs, so this holds no
 	// matter on which side of the phase current sensor the supply is connected.
@@ -751,15 +807,21 @@ boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float
 
 		if (ind >= 0) {
 			boost_trace_t *t = &m_trace[ind];
+			t->v7 = sample_v7;
 			t->t_active = m_active_time;
-			t->i_leg_1 = i_leg_1;
-			t->i_leg_2 = i_leg_2;
+			t->i_leg_1 = i_smp_1;
+			t->i_leg_2 = i_smp_2;
 			t->i_in = i_in;
 			t->i_ref = m_i_ref;
 			t->integ = m_integ;
 			t->duty = duty_applied;
 			t->v_sup = v_sup;
 		}
+	}
+
+	// See BOOST_OPEN_TRACK_A
+	if (m_i_in > BOOST_OPEN_TRACK_A && v_sup_c > m_v_open) {
+		m_v_open = v_sup_c;
 	}
 
 	if (v_bat_raw_c > m_conf.v_bat_max) {
@@ -786,7 +848,7 @@ boost_out_t boost_charge_isr(float ia, float ib, float ic, bool motor_off, float
 		trip(BOOST_TRIP_OVERCURRENT);
 	} else if (m_i_in < -fmaxf(3.0, 0.25 * m_conf.i_max)) {
 		trip(BOOST_TRIP_REVERSE_CURRENT);
-	} else if (v_sup_c > m_conf.v_sup_max) {
+	} else if (v_sup_c > sup_max()) {
 		trip(BOOST_TRIP_SUPPLY_OV);
 	} else if (supply_above_ratio(v_sup_c, v_bat_c)) {
 		trip(BOOST_TRIP_SUPPLY_HIGH);
@@ -909,7 +971,8 @@ static void terminal_trace(int argc, const char **argv) {
 			commands_printf("  zero at duty %.2f: %.2f A", (double)BOOST_ZTAB_DUTY(i), (double)m_ztab[i]);
 		}
 	}
-	commands_printf("   t [ms]  leg1 [A] leg2 [A]  in [A]  ref [A]  integ [V]  duty    sup [V]");
+	// leg1/leg2 are the samples as read (V0 or V7), in is from both, see boost_charge_isr
+	commands_printf("   t [ms] at  leg1 [A] leg2 [A]  in [A]  ref [A]  integ [V]  duty    sup [V]");
 
 	// The first samples in order, then the ring from its oldest entry
 	const int ring_len = BOOST_TRACE_LEN - BOOST_TRACE_START;
@@ -923,8 +986,8 @@ static void terminal_trace(int argc, const char **argv) {
 			i = BOOST_TRACE_START + (oldest + k - n_first) % ring_len;
 		}
 		const boost_trace_t *t = &m_trace[i];
-		commands_printf("%9.3f %8.2f %8.2f %7.2f %8.2f %9.2f  %.4f %7.1f",
-				(double)(t->t_active * 1000.0), (double)t->i_leg_1, (double)t->i_leg_2,
+		commands_printf("%9.3f %s %8.2f %8.2f %7.2f %8.2f %9.2f  %.4f %7.1f",
+				(double)(t->t_active * 1000.0), t->v7 ? "V7" : "V0", (double)t->i_leg_1, (double)t->i_leg_2,
 				(double)t->i_in, (double)t->i_ref, (double)t->integ, (double)t->duty, (double)t->v_sup);
 	}
 	commands_printf(" ");
@@ -978,6 +1041,11 @@ static void terminal_zero(int argc, const char **argv) {
 }
 
 static void terminal_lag(int argc, const char **argv) {
+#ifdef HW_HAS_PHASE_SHUNTS
+	(void)argc; (void)argv;
+	commands_printf("Not used: phase current sensors are sampled in V0 and V7, which cancels the lag.\n");
+	return;
+#endif
 	if (argc == 2) {
 		float us = -1.0;
 		sscanf(argv[1], "%f", &us);

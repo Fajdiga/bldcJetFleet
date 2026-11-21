@@ -2563,6 +2563,59 @@ static void boost_cal_phase_dividers(int phase) {
 	}
 }
 
+/**
+ * Boost charging: the edge (counter top = V0, bottom = V7) the samples of
+ * this interrupt were triggered on. TIM2 restarts at every TIM1 update and
+ * counts at half the TIM1 clock. Above about 100 kHz the ADC sequence outlasts
+ * half a PWM period, so the TIM1 counting direction no longer tells.
+ */
+static bool boost_sampled_v7(void) {
+	const int32_t since = 2 * (int32_t)TIM2->CNT;
+	const int32_t top = TIM1->ARR;
+	const bool down = TIM1->CR1 & TIM_CR1_DIR;
+	const int32_t cnt = TIM1->CNT;
+
+	// TIM1 counts since its last bottom, then back to the update
+	int32_t t = (down ? 2 * top - cnt : cnt) - since;
+	t %= 2 * top;
+	if (t < 0) {
+		t += 2 * top;
+	}
+	return t < top / 2 || t > 3 * top / 2;
+}
+
+/**
+ * Boost charging: TIM1 repetition counter. The legs switch up to a few 100 kHz,
+ * faster than this interrupt can run. Skipped update events skip the ADC
+ * trigger and this interrupt with them, so it runs at BOOST_ISR_F_MAX or less.
+ * Phase current sensors: an odd number of half periods between samples, which
+ * then alternate between V0 and V7 (see boost_charge_isr). Low side shunts only
+ * read in V0: an even number, and once an odd one if the samples are in V7.
+ * A value written here applies after the next update, which is
+ * TIM1->RCR + 1 half periods from the one of this interrupt.
+ */
+#ifndef BOOST_ISR_F_MAX
+#define BOOST_ISR_F_MAX		35.0e3
+#endif
+static uint32_t boost_rcr(bool sampled_v7) {
+	float n_min = ceilf(m_motor_1.m_conf->foc_f_zv / BOOST_ISR_F_MAX);
+	utils_truncate_number(&n_min, 1.0, 250.0);	// RCR is 8 bits
+	uint32_t n = (uint32_t)n_min;
+
+#ifdef HW_HAS_PHASE_SHUNTS
+	(void)sampled_v7;
+	n |= 1;
+#else
+	n += n & 1;
+	const bool next_v7 = sampled_v7 != (((TIM1->RCR + 1) & 1) == 1);
+	if (next_v7) {
+		n++;
+	}
+#endif
+
+	return n - 1;
+}
+
 #ifndef HW_USE_ALTERNATIVE_DC_CAL
 int mcpwm_foc_dc_cal(bool cal_undriven) {
 	// The calibration switches all phases and would short a connected charger
@@ -3019,13 +3072,19 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 
 	bool do_return = false;
 
+	// Boost charging owns this interrupt, see the boost block below
+	const bool boost_isr = boost_charge_locked() || boost_charge_zero_sweeping();
+	if (boost_isr) {
+		is_v7 = boost_sampled_v7();
+	}
+
 #ifndef HW_HAS_DUAL_MOTORS
 #ifdef HW_HAS_PHASE_SHUNTS
-	if (conf_now->foc_control_sample_mode != FOC_CONTROL_SAMPLE_MODE_V0_V7 && is_v7) {
+	if (conf_now->foc_control_sample_mode != FOC_CONTROL_SAMPLE_MODE_V0_V7 && is_v7 && !boost_isr) {
 		do_return = true;
 	}
 #else
-	if (is_v7) {
+	if (is_v7 && !boost_isr) {
 		do_return = true;
 	}
 #endif
@@ -3164,12 +3223,44 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 		// Read the output state from the timer, as the offset calibration
 		// switches the legs without going through start_pwm_hw.
 		const bool outputs_off = (TIM1->CCER & (TIM_CCER_CC1NE | TIM_CCER_CC2NE | TIM_CCER_CC3NE)) == 0;
-		boost_out_t boost_out = boost_charge_isr(curr0, curr1, curr2,
-				outputs_off && motor_now->m_state == MC_STATE_OFF, dt, &boost_duty);
 
-		if (boost_out != BOOST_OUT_UNLOCKED) {
+#ifndef HW_HAS_PHASE_SHUNTS
+		// Low side shunts read nothing in V7. Only happens once after the
+		// repetition counter changed, which boost_rcr then corrects.
+		if (boost_isr && is_v7) {
+			TIM1->RCR = boost_rcr(true);
+			m_isr_motor = 0;
+			return;
+		}
+#endif
+
+		// Time since the last interrupt, see boost_rcr
+		const float boost_dt = boost_isr ? (float)(TIM1->RCR + 1) / conf_now->foc_f_zv : dt;
+		boost_out_t boost_out = boost_charge_isr(curr0, curr1, curr2,
+				outputs_off && motor_now->m_state == MC_STATE_OFF, is_v7, boost_dt, &boost_duty);
+
+		if (boost_out == BOOST_OUT_UNLOCKED) {
+			if (TIM1->RCR != 0) {
+				TIM1->RCR = 0;
+			}
+			// Just unlocked: let the motor control start at the next interrupt
+			if (boost_isr) {
+				m_isr_motor = 0;
+				return;
+			}
+		} else {
 			motor_now->m_state = MC_STATE_OFF;
 			motor_now->m_control_mode = CONTROL_MODE_NONE;
+
+			const uint32_t rcr = boost_rcr(is_v7);
+			if (TIM1->RCR != rcr) {
+				TIM1->RCR = rcr;
+			}
+
+			// For the sampled data in VESC Tool
+			ADC_curr_norm_value[0] = curr0;
+			ADC_curr_norm_value[1] = curr1;
+			ADC_curr_norm_value[2] = curr2;
 
 			// All legs get the same compare value. The supply phase is forced off.
 			uint32_t duty_cnt = (uint32_t)(boost_duty * (float)TIM1->ARR + 0.5);
@@ -3187,9 +3278,9 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 			// to do. Skipping them leaves the CPU to the threads, the charge
 			// script among them, at high switching frequencies.
 #ifdef HW_HAS_DUAL_MOTORS
-			mc_interface_mc_timer_isr(is_second_motor, dt);
+			mc_interface_mc_timer_isr(is_second_motor, boost_dt);
 #else
-			mc_interface_mc_timer_isr(false, dt);
+			mc_interface_mc_timer_isr(false, boost_dt);
 #endif
 			m_isr_motor = 0;
 			return;

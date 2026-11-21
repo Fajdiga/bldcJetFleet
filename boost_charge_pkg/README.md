@@ -62,9 +62,9 @@ If no BMS has been heard on the CAN bus for 30 s, the pack voltage divided by th
 ## Settings worth knowing
 
 - **Charger phase**: on hardware with two shunts this must be phase 3, the phase without a shunt.
-- **Lowest and highest charger voltage**: 0 takes them from the voltage measured at the start: charging backs off when the charger sags to 80 % of it and stops above 110 %.
+- **Lowest and highest charger voltage**: 0 follows the charger, so it can be turned up or down while charging. Charging backs off when the charger sags to 80 % of its voltage (which it follows down within about 10 s) and stops when it rises 10 % above the highest voltage it held while delivering current.
 - **Current loop Kp/Ki**: 0 uses 1.5 times the FOC current controller gains, which matches the winding path of one phase in series with two in parallel.
-- **Switching frequency**: applied while charge mode is on, restored afterwards. 0 keeps the motor setting. The value is the PWM frequency, half of the FOC zero vector frequency.
+- **Switching frequency**: applied while charge mode is on, restored afterwards. 0 keeps the motor setting. The value is the PWM frequency, half of the FOC zero vector frequency. Up to 200 kHz: above about 17 kHz the current loop runs at about 35 kHz and only every few PWM periods. Hardware with phase current sensors (G18) then samples alternately in V0 and V7, which cancels sensor and sample delays.
 - **Pack voltage limit**: must be set by hand for the bench test, as no cell data is used there.
 
 ## What the firmware does on its own
