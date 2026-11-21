@@ -81,6 +81,8 @@ static void(* volatile send_func)(unsigned char *data, unsigned int len) = 0;
 static void(* volatile send_func_blocking)(unsigned char *data, unsigned int len) = 0;
 static void(* volatile send_func_nrf)(unsigned char *data, unsigned int len) = 0;
 static void(* volatile send_func_can_fwd)(unsigned char *data, unsigned int len) = 0;
+// Where the last custom app data came from, see commands_send_packet_app
+static void(* volatile send_func_app)(unsigned char *data, unsigned int len) = 0;
 static void(* volatile appdata_func)(unsigned char *data, unsigned int len) = 0;
 static void(* volatile hwdata_func)(unsigned char *data, unsigned int len) = 0;
 static disp_pos_mode display_position_mode;
@@ -113,6 +115,21 @@ bool commands_is_initialized(void) {
 void commands_send_packet(unsigned char *data, unsigned int len) {
 	if (send_func) {
 		send_func(data, len);
+	}
+}
+
+/**
+ * Send a packet to where the last custom app data came from, or to the last
+ * sender if none came yet. A script that answers a page (QML) after a while
+ * would otherwise answer whoever sent a packet in the meantime, such as a
+ * VESC Express on the CAN bus, and the page would miss the answer.
+ */
+void commands_send_packet_app(unsigned char *data, unsigned int len) {
+	void(*func)(unsigned char *data, unsigned int len) = send_func_app;
+	if (func) {
+		func(data, len);
+	} else {
+		commands_send_packet(data, len);
 	}
 }
 
@@ -178,6 +195,9 @@ void commands_unregister_reply_func(void(*reply_func)(unsigned char *data, unsig
 	}
 	if (send_func_can_fwd == reply_func) {
 		send_func_can_fwd = NULL;
+	}
+	if (send_func_app == reply_func) {
+		send_func_app = NULL;
 	}
 }
 
@@ -769,6 +789,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 	} break;
 
 	case COMM_CUSTOM_APP_DATA:
+		send_func_app = reply_func;
 		if (appdata_func) {
 			appdata_func(data, len);
 		}

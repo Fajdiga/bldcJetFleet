@@ -1419,6 +1419,11 @@ static void send_app_data(unsigned char *data, unsigned int len, int interface, 
 		app_uartcomm_send_packet(send_buffer_global, index, 2);
 		break;
 
+	case 6:
+		// Where the last custom app data came from: the answer to a page
+		commands_send_packet_app(send_buffer_global, index);
+		break;
+
 	default:
 		break;
 	}

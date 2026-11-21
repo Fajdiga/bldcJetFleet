@@ -26,6 +26,7 @@
 void commands_init(void);
 bool commands_is_initialized(void);
 void commands_send_packet(unsigned char *data, unsigned int len);
+void commands_send_packet_app(unsigned char *data, unsigned int len);
 void commands_send_packet_can_last(unsigned char *data, unsigned int len);
 void commands_send_packet_nrf(unsigned char *data, unsigned int len);
 void commands_send_packet_last_blocking(unsigned char *data, unsigned int len);

@@ -404,7 +404,7 @@
         (var str "set")
         (loopforeach it settings
             (setq str (str-merge str (str-from-n it " %.4f"))))
-        (send-data str)
+        (send-data str 6)
 })
 
 (defun send-status (bs)
@@ -433,7 +433,7 @@
             (str-from-n (cells) " %d")
             (if use-bms " 1" " 0")
             " " msg
-)))
+) 6))
 
 ; The functions below are called from the QML page
 
@@ -487,7 +487,7 @@
 (defun ui-save () {
         (save-settings)
         (send-settings)
-        (send-data "msg Settings saved")
+        (send-data "msg Settings saved" 6)
 })
 
 (defun event-handler ()
@@ -516,6 +516,8 @@
 (loopwhile t {
         (var dt (secs-since tick-t))
         (setq tick-t (systime))
-        (tick dt)
+        ; An error (such as a full heap for a moment) must not end this loop.
+        ; A tick that fails does not refresh the setpoint, so the firmware stops.
+        (trap (tick dt))
         (sleep 0.1)
 })
